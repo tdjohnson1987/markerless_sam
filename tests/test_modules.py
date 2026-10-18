@@ -2,8 +2,8 @@ from pathlib import Path
 import tempfile
 import numpy as np
 import pandas as pd
-from synchronization import synchronize,align_angle_csv
-from dashboard_export import export_dashboard_payload
+from src.synchronization import synchronize,align_angle_csv
+from src.dashboard_export import export_dashboard_payload
 
 def test_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:

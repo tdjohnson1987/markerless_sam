@@ -5,7 +5,7 @@ SAM 3D Kinematics & Kinetics Pipeline Python CLI Launcher
 import argparse
 import subprocess
 import sys
-from comparison_engine import align_and_compare
+from src.comparison_engine import align_and_compare
 
 
 def main():

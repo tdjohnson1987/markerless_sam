@@ -3,7 +3,7 @@ from pathlib import Path
 import json
 import numpy as np
 import pandas as pd
-from comparison_engine_v2 import compare_angles
+from src.comparison_engine import compare_angles
 
 def run():
     with tempfile.TemporaryDirectory() as d:

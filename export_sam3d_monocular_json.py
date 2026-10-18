@@ -10,9 +10,9 @@ import json
 import numpy as np
 import pandas as pd
 
-from vicon_parser import load_vicon_c3d
+from src.vicon_parser import load_vicon_c3d
 from sam3d_pipeline import process_sam3d_kinematics
-from comparison_engine import align_and_compare
+from src.comparison_engine import align_and_compare
 
 
 def build_mhr_body_mesh_template():
