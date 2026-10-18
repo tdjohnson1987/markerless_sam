@@ -1,240 +1,145 @@
-"""
-SAM 3D vs. Vicon Motion Capture Comparison & Validation Engine
-Handles cross-correlation time synchronization, interpolation, statistical metrics calculation,
-and exports high-resolution comparative figures and JSON summaries.
-"""
+"""Reproducible SAM-vs-Vicon angle comparison with externally determined sync.
 
-import os
+No knee/hip/ankle based timing optimization, no fictitious kinetics.
+Run `python comparison_engine_v2.py --help` for CLI options.
+"""
+from __future__ import annotations
+import argparse
 import json
+from pathlib import Path
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy.interpolate import interp1d
-from scipy.signal import correlate
-from scipy.stats import pearsonr
 
-from vicon_parser import load_vicon_c3d
-from sam3d_pipeline import process_sam3d_kinematics
-
-plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')
-plt.rcParams['font.family'] = 'sans-serif'
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'Helvetica']
+JOINTS=('hip','knee','ankle')
+METHODS=('geo','euler','smooth')  # 'smooth' supports older dashboard CSVs; convention must be verified
 
 
-def align_and_compare(vicon_c3d_path: str, sam3d_csv_path: str, output_dir: str = 'figures') -> dict:
+def _load_sync(path):
+    data=json.loads(Path(path).read_text())
+    if not np.isfinite(float(data['shift_ms'])):
+        raise ValueError('Non-finite shift_ms')
+    return data
+
+
+def _time_clean(df, name):
+    t=pd.to_numeric(df[name],errors='coerce').to_numpy(dtype=float)
+    if not np.all(np.isfinite(t)) or np.any(np.diff(t)<=0):
+        raise ValueError(f'{name} must be finite and strictly increasing')
+    return t
+
+
+def _interpolate_reference(vicon, t_target, joint):
+    key=f'vicon_{joint}_flex'
+    if key not in vicon: return np.full(len(t_target),np.nan)
+    x=pd.to_numeric(vicon[key],errors='coerce').to_numpy(float)
+    t=_time_clean(vicon,'time_ms')
+    good=np.isfinite(x)
+    if good.sum()<2:return np.full(len(t_target),np.nan)
+    return np.interp(t_target,t[good],x[good],left=np.nan,right=np.nan)
+
+
+def _metric(v,s,t):
+    ok=np.isfinite(v)&np.isfinite(s)&np.isfinite(t)
+    v,s,t=v[ok],s[ok],t[ok]
+    if len(v)<3:return None
+    diff=s-v
+    cor=float(np.corrcoef(v,s)[0,1]) if np.std(v)>1e-10 and np.std(s)>1e-10 else np.nan
+    return dict(n_samples=int(len(v)), rmse_raw_deg=float(np.sqrt(np.mean(diff**2))),
+                mae_raw_deg=float(np.mean(np.abs(diff))),bias_deg=float(np.mean(diff)),
+                pearson_r=cor,rom_error_deg=float(np.ptp(s)-np.ptp(v)),
+                peak_error_deg=float(np.max(s)-np.max(v)),
+                peak_time_error_ms=float(t[np.argmax(s)]-t[np.argmax(v)]))
+
+
+def compare_angles(angle_csv, output_dir, *, sync_json=None, vicon_csv=None,
+                   subject='unknown',trial='unknown',camera='unknown',
+                   allow_legacy_embedded_reference=False, plot=True):
+    """Compare already-synchronized SAM angles OR raw SAM angles with a sync JSON.
+
+    - RAW input must have `time_ms` (video clock); sync_json required.
+    - ALIGNED input has `time_ms_aligned`; cannot apply sync again.
+    - Independent reference CSV should contain `time_ms` (Vicon clock) and
+      vicon_{hip,knee,ankle}_flex columns. No joint-based shifting is done.
+    - Legacy pre-aligned joint CSV can be used with explicit opt-in, but cannot
+      prove sync independence and must be treated as exploratory.
     """
-    Executes full comparative validation between Vicon gold standard and SAM 3D pipeline.
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 1. Load Datasets
-    vicon_df, vicon_rate, _ = load_vicon_c3d(vicon_c3d_path)
-    sam_df = process_sam3d_kinematics(sam3d_csv_path, scale_locked=True)
-    
-    vicon_t = vicon_df['time'].values
-    vicon_knee = vicon_df['r_knee_flex'].values
-    vicon_hip = vicon_df['r_hip_flex'].values
-    
-    sam_t = sam_df['time'].values
-    sam_knee_raw = sam_df['r_knee_flex_raw'].values
-    sam_knee_kalman = sam_df['r_knee_flex_kalman'].values
-    sam_knee_smoothed = sam_df['r_knee_flex_smoothed'].values
-    
-    # Ensure positive Hip Flexion convention for SAM 3D (flexion = positive angle increase)
-    sam_hip_raw = sam_df['r_hip_flex_smoothed'].values
-    sam_hip_smoothed = np.abs(sam_hip_raw - sam_hip_raw[0])
-    
-    # 2. Cross-Correlation Time Alignment (Peak Lunge Matching)
-    v_norm = vicon_knee - np.mean(vicon_knee)
-    s_norm = sam_knee_smoothed - np.mean(sam_knee_smoothed)
-    
-    interp_sam_temp = interp1d(sam_t, s_norm, kind='linear', fill_value='extrapolate')
-    t_temp = np.arange(0, sam_t[-1], 1.0 / vicon_rate)
-    sam_100hz_temp = interp_sam_temp(t_temp)
-    
-    corr = correlate(v_norm, sam_100hz_temp, mode='full')
-    lags = np.arange(-len(sam_100hz_temp) + 1, len(v_norm))
-    best_lag = lags[np.argmax(corr)]
-    time_shift = best_lag / vicon_rate
-    
-    sam_t_aligned = sam_t + time_shift
-    
-    # 3. Create Common Unified Time Grid within Overlapping Window
-    t_min = max(vicon_t[0], sam_t_aligned[0])
-    t_max = min(vicon_t[-1], sam_t_aligned[-1])
-    
-    unified_t = np.linspace(t_min, t_max, num=500)
-    peak_idx = np.argmax(interp1d(vicon_t, vicon_knee)(unified_t))
-    time_rel_peak = unified_t - unified_t[peak_idx]
-    
-    f_v_knee = interp1d(vicon_t, vicon_knee, kind='linear')
-    f_v_hip  = interp1d(vicon_t, vicon_hip, kind='linear')
-    
-    f_s_knee_raw = interp1d(sam_t_aligned, sam_knee_raw, kind='linear', fill_value='extrapolate')
-    f_s_knee_kalman = interp1d(sam_t_aligned, sam_knee_kalman, kind='linear', fill_value='extrapolate')
-    f_s_knee_smooth = interp1d(sam_t_aligned, sam_knee_smoothed, kind='linear', fill_value='extrapolate')
-    f_s_hip_smooth = interp1d(sam_t_aligned, sam_hip_smoothed, kind='linear', fill_value='extrapolate')
-    
-    y_vicon_knee = f_v_knee(unified_t)
-    y_vicon_hip  = f_v_hip(unified_t)
-    
-    y_sam_knee_raw = f_s_knee_raw(unified_t)
-    y_sam_knee_kalman = f_s_knee_kalman(unified_t)
-    y_sam_knee_smooth = f_s_knee_smooth(unified_t)
-    y_sam_hip_smooth = f_s_hip_smooth(unified_t)
-    
-    # 4. Statistical Metrics Calculation
-    def calc_metrics(y_true, y_pred):
-        diff = y_pred - y_true
-        mae = float(np.mean(np.abs(diff)))
-        rmse = float(np.sqrt(np.mean(diff**2)))
-        r_val, _ = pearsonr(y_true, y_pred)
-        bias = float(np.mean(diff))
-        sd_diff = float(np.std(diff))
-        upper_loa = float(bias + 1.96 * sd_diff)
-        lower_loa = float(bias - 1.96 * sd_diff)
-        return {
-            'mae': round(mae, 2),
-            'rmse': round(rmse, 2),
-            'pearson_r': round(float(r_val), 3),
-            'bias': round(bias, 2),
-            'sd': round(sd_diff, 2),
-            'upper_loa': round(upper_loa, 2),
-            'lower_loa': round(lower_loa, 2)
-        }
-
-    metrics = {
-        'knee_raw': calc_metrics(y_vicon_knee, y_sam_knee_raw),
-        'knee_kalman': calc_metrics(y_vicon_knee, y_sam_knee_kalman),
-        'knee_smoothed': calc_metrics(y_vicon_knee, y_sam_knee_smooth),
-        'hip_smoothed': calc_metrics(y_vicon_hip, y_sam_hip_smooth),
-        'time_shift_sec': round(float(time_shift), 3)
-    }
-
-    # 5. Generate High-Resolution Figures
-    
-    # Figure 1: Waveforms & Continuous Error
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
-    ax1.plot(time_rel_peak, y_vicon_knee, label='Vicon Gold Standard', color='#0f172a', linewidth=2.8)
-    ax1.plot(time_rel_peak, y_sam_knee_raw, label='SAM 3D (Raw Unfiltered)', color='#ef4444', linestyle=':', alpha=0.5)
-    ax1.plot(time_rel_peak, y_sam_knee_kalman, label='SAM 3D (Kalman Filter)', color='#eab308', linestyle='--', linewidth=1.8)
-    ax1.plot(time_rel_peak, y_sam_knee_smooth, label='SAM 3D (Smoothed Final)', color='#06b6d4', linewidth=2.5)
-    
-    ax1.set_ylabel('Knee Flexion (Degrees)', fontsize=12, fontweight='bold')
-    ax1.set_title('Markerless SAM 3D vs. Vicon Gold Standard: Knee Flexion Waveform', fontsize=14, fontweight='bold', pad=12)
-    ax1.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#cbd5e1')
-    ax1.grid(True, alpha=0.4)
-
-    abs_err = np.abs(y_sam_knee_smooth - y_vicon_knee)
-    ax2.fill_between(time_rel_peak, abs_err, color='#06b6d4', alpha=0.3, label='Absolute Tracking Error')
-    ax2.plot(time_rel_peak, abs_err, color='#0891b2', linewidth=1.5)
-    ax2.axhline(metrics['knee_smoothed']['mae'], color='#ef4444', linestyle='--', label=f"Mean Error: {metrics['knee_smoothed']['mae']}°")
-    ax2.set_ylabel('Abs Error (°)', fontsize=11, fontweight='bold')
-    ax2.set_xlabel('Time Relative to Peak Lunge (seconds)', fontsize=12, fontweight='bold')
-    ax2.legend(loc='upper right', frameon=True)
-    ax2.grid(True, alpha=0.4)
-    plt.tight_layout()
-    fig1_path = os.path.join(output_dir, 'sam3d_vs_vicon_waveforms.png')
-    plt.savefig(fig1_path, dpi=300)
-    plt.close()
-
-    # Figure 2: Bland-Altman Agreement Plots
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.5))
-    
-    def draw_bland_altman(ax, m1, m2, title, col):
-        mean_val = (m1 + m2) / 2.0
-        diff_val = m1 - m2
-        bias = np.mean(diff_val)
-        sd_val = np.std(diff_val)
-        u_loa = bias + 1.96 * sd_val
-        l_loa = bias - 1.96 * sd_val
-        
-        ax.scatter(mean_val, diff_val, alpha=0.6, color=col, edgecolors='k', s=35)
-        ax.axhline(bias, color='#dc2626', linestyle='-', linewidth=2.0, label=f'Bias: {bias:.2f}°')
-        ax.axhline(u_loa, color='#1e293b', linestyle='--', linewidth=1.5, label=f'+1.96 SD ({u_loa:.2f}°)')
-        ax.axhline(l_loa, color='#1e293b', linestyle='--', linewidth=1.5, label=f'-1.96 SD ({l_loa:.2f}°)')
-        ax.set_title(f'Bland-Altman: {title}', fontsize=12, fontweight='bold')
-        ax.set_xlabel('Mean of Vicon & SAM 3D (°)', fontsize=11)
-        ax.set_ylabel('Difference (SAM 3D - Vicon) (°)', fontsize=11)
-        ax.legend(loc='upper right', frameon=True)
-        ax.grid(True, alpha=0.4)
-
-    draw_bland_altman(ax1, y_sam_knee_smooth, y_vicon_knee, 'Knee Flexion', '#0284c7')
-    draw_bland_altman(ax2, y_sam_hip_smooth, y_vicon_hip, 'Hip Flexion', '#0d9488')
-    plt.tight_layout()
-    fig2_path = os.path.join(output_dir, 'bland_altman_plots.png')
-    plt.savefig(fig2_path, dpi=300)
-    plt.close()
-
-    # Figure 3: Unity Scatter Plots
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5.5))
-    
-    def draw_unity(ax, vicon_data, sam_data, title, col):
-        r_val, _ = pearsonr(vicon_data, sam_data)
-        rmse_val = np.sqrt(np.mean((sam_data - vicon_data)**2))
-        
-        min_v = min(np.min(vicon_data), np.min(sam_data)) - 5
-        max_v = max(np.max(vicon_data), np.max(sam_data)) + 5
-        
-        ax.scatter(vicon_data, sam_data, alpha=0.5, color=col, edgecolors='none', s=25)
-        ax.plot([min_v, max_v], [min_v, max_v], 'k--', linewidth=2, label='Unity Line (y = x)')
-        
-        m, b = np.polyfit(vicon_data, sam_data, 1)
-        ax.plot(vicon_data, m * vicon_data + b, color='#dc2626', linewidth=2, label=f'Fit (y = {m:.2f}x + {b:.1f})')
-        
-        ax.set_title(f'Unity Plot: {title}', fontsize=12, fontweight='bold')
-        ax.set_xlabel('Vicon Gold Standard (°)', fontsize=11)
-        ax.set_ylabel('SAM 3D Markerless (°)', fontsize=11)
-        ax.set_xlim(min_v, max_v)
-        ax.set_ylim(min_v, max_v)
-        
-        props = dict(boxstyle='round', facecolor='#f8fafc', edgecolor='#cbd5e1', alpha=0.9)
-        ax.text(0.05, 0.92, f"Pearson r: {r_val:.3f}\nRMSE: {rmse_val:.2f}°", transform=ax.transAxes, fontsize=11, bbox=props)
-        ax.legend(loc='lower right', frameon=True)
-        ax.grid(True, alpha=0.4)
-
-    draw_unity(ax1, y_vicon_knee, y_sam_knee_smooth, 'Knee Flexion', '#2563eb')
-    draw_unity(ax2, y_vicon_hip, y_sam_hip_smooth, 'Hip Flexion', '#059669')
-    plt.tight_layout()
-    fig3_path = os.path.join(output_dir, 'unity_scatter_plots.png')
-    plt.savefig(fig3_path, dpi=300)
-    plt.close()
-
-    # Figure 4: Kinetics Estimation (Joint Moments & Power)
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-    
-    interp_moment = interp1d(sam_t_aligned, sam_df['r_knee_moment_nm_kg'], kind='linear', fill_value='extrapolate')(unified_t)
-    interp_power  = interp1d(sam_t_aligned, sam_df['r_knee_power_w_kg'], kind='linear', fill_value='extrapolate')(unified_t)
-    
-    ax1.plot(time_rel_peak, interp_moment, color='#7c3aed', linewidth=2.5, label='Net Knee Extension Moment')
-    ax1.axhline(0, color='#64748b', linestyle=':')
-    ax1.set_ylabel('Joint Moment (N·m / kg)', fontsize=11, fontweight='bold')
-    ax1.set_title('SAM 3D Inverse Dynamics Kinetics: Knee Moment & Joint Power', fontsize=13, fontweight='bold', pad=10)
-    ax1.legend(loc='upper right')
-    ax1.grid(True, alpha=0.4)
-    
-    ax2.plot(time_rel_peak, interp_power, color='#059669', linewidth=2.2, label='Knee Joint Power')
-    ax2.axhline(0, color='#64748b', linestyle=':')
-    ax2.set_ylabel('Joint Power (W / kg)', fontsize=11, fontweight='bold')
-    ax2.set_xlabel('Time Relative to Peak Lunge (seconds)', fontsize=12, fontweight='bold')
-    ax2.legend(loc='upper right')
-    ax2.grid(True, alpha=0.4)
-    plt.tight_layout()
-    fig4_path = os.path.join(output_dir, 'kinetics_moments_powers.png')
-    plt.savefig(fig4_path, dpi=300)
-    plt.close()
-
-    # Save summary JSON
-    results_json = os.path.join(output_dir, 'comparison_summary.json')
-    with open(results_json, 'w') as f:
-        json.dump(metrics, f, indent=2)
-        
-    print(f"Validation complete! Results saved to {output_dir}/")
+    out=Path(output_dir);out.mkdir(parents=True,exist_ok=True)
+    df=pd.read_csv(angle_csv)
+    if len(df)==0:raise ValueError('Empty angle CSV')
+    already='time_ms_aligned' in df
+    if already:
+        if sync_json is not None:
+            raise ValueError('Input already has time_ms_aligned. Do not apply a second synchronization.')
+        t=_time_clean(df,'time_ms_aligned')
+        sync={'method':'prealigned_upstream','shift_ms':None,'status':'not_verified_here'}
+    else:
+        if 'time_ms' not in df or sync_json is None:
+            raise ValueError('Unaligned SAM CSV needs raw time_ms plus --sync-json')
+        sync=_load_sync(sync_json)
+        t=_time_clean(df,'time_ms')+float(sync['shift_ms'])
+        df['time_ms_aligned']=t
+    if vicon_csv:
+        vicon=pd.read_csv(vicon_csv)
+        for joint in JOINTS:
+            df[f'vicon_{joint}_flex']=_interpolate_reference(vicon,t,joint)
+        reference_origin='independent_vicon_csv'
+    else:
+        if not allow_legacy_embedded_reference:
+            raise ValueError('Provide --vicon-csv, or explicitly use --allow-legacy-embedded-reference for exploratory already-aligned CSV')
+        if not already: raise ValueError('Legacy embedded Vicon permitted only for pre-aligned CSVs')
+        reference_origin='embedded_preinterpolated_vicon_unverified'
+    rows=[]
+    for joint in JOINTS:
+        vcol=f'vicon_{joint}_flex'
+        if vcol not in df:continue
+        v=pd.to_numeric(df[vcol],errors='coerce').to_numpy(float)
+        for method in METHODS:
+            col=f'r_{joint}_flex_{method}'
+            if col not in df:continue
+            s=pd.to_numeric(df[col],errors='coerce').to_numpy(float)
+            m=_metric(v,s,t)
+            if m is not None:
+                rows.append(dict(subject=subject,trial=trial,camera=camera,joint=joint,
+                                 method=method,reference_origin=reference_origin,
+                                 sync_method=sync.get('method'),sync_shift_ms=sync.get('shift_ms'),**m))
+    if not rows:raise ValueError('No comparable joint/method columns with ≥3 valid overlapping samples')
+    metrics=pd.DataFrame(rows)
+    angles_path=out/'aligned_angles.csv';metrics_path=out/'validation_metrics.csv'
+    df.to_csv(angles_path,index=False);metrics.to_csv(metrics_path,index=False)
+    summary={'subject':subject,'trial':trial,'camera':camera,'sync':sync,
+             'reference_origin':reference_origin,'metrics':json.loads(metrics.to_json(orient='records'))}
+    (out/'validation_summary.json').write_text(json.dumps(summary,indent=2,allow_nan=False))
+    if plot:
+        import matplotlib.pyplot as plt
+        fig,axes=plt.subplots(3,1,figsize=(11,9),sharex=True)
+        for ax,joint in zip(axes,JOINTS):
+            vcol=f'vicon_{joint}_flex'
+            if vcol in df:ax.plot(t/1000,df[vcol],label='Vicon',lw=2.2,c='black')
+            for method in METHODS:
+                c=f'r_{joint}_flex_{method}'
+                if c in df:ax.plot(t/1000,df[c],label=f'SAM {method}',alpha=.85)
+            ax.set_ylabel(joint.capitalize()+' (deg)');ax.grid(alpha=.2);ax.legend(loc='best')
+        axes[-1].set_xlabel('Vicon-clock time (s)')
+        fig.suptitle(f'{subject} / {trial} / {camera} – {reference_origin}')
+        fig.tight_layout();fig.savefig(out/'angle_comparison.png',dpi=160);plt.close(fig)
     return metrics
 
 
-if __name__ == '__main__':
-    metrics = align_and_compare('vicon/lunge/s11_lunge_0_1.c3d', 's11_lunge_cam0_joint_angles.csv')
-    print("Metrics summary:")
-    print(json.dumps(metrics, indent=2))
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--angles',required=True)
+    p.add_argument('--output',required=True)
+    p.add_argument('--sync-json',default=None)
+    p.add_argument('--vicon-csv',default=None)
+    p.add_argument('--subject',default='unknown')
+    p.add_argument('--trial',default='unknown')
+    p.add_argument('--camera',default='unknown')
+    p.add_argument('--allow-legacy-embedded-reference',action='store_true')
+    args=p.parse_args()
+    res=compare_angles(args.angles,args.output,sync_json=args.sync_json,vicon_csv=args.vicon_csv,
+                       subject=args.subject,trial=args.trial,camera=args.camera,
+                       allow_legacy_embedded_reference=args.allow_legacy_embedded_reference)
+    print(res[['joint','method','n_samples','rmse_raw_deg','bias_deg','pearson_r']].to_string(index=False))
+    print(f'Outputs saved to {args.output}')
+
+if __name__=='__main__':main()
