@@ -34,7 +34,7 @@ def main():
     if args.serve:
         print(f"\n🌐 Starting web dashboard on http://localhost:{args.port}...")
         try:
-            subprocess.run([sys.executable, "-m", "http.server", str(args.port), "--directory", "App"])
+            subprocess.run([sys.executable, "-m", "http.server", str(args.port), "--directory", "dashboard"], check=True)
         except KeyboardInterrupt:
             print("\nStopped dashboard server.")
 

@@ -31,7 +31,7 @@ run_gait_analysis() {
     echo "📊 [1/2] Building Normative Gait Dataset Bank & Running Clinical Diagnostics..."
     $PYTHON_BIN normative_gait_data.py
     $PYTHON_BIN gait_analysis_engine.py
-    echo "✅ Normative gait bank and clinical analysis complete! Payloads saved to App/"
+    echo "✅ Normative gait bank and clinical analysis complete! Payloads saved to dashboard/"
 }
 
 run_compare() {
@@ -49,7 +49,7 @@ run_dashboard() {
     echo "🌐 Starting Interactive Clinical Web Dashboard on http://localhost:$PORT ..."
     echo "👉 Open http://localhost:$PORT in your web browser."
     echo "Press Ctrl+C to stop the server."
-    $PYTHON_BIN -m http.server $PORT --directory App
+    $PYTHON_BIN -m http.server $PORT --directory dashboard
 }
 
 case "$1" in
