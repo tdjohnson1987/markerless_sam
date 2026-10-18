@@ -1,0 +1,154 @@
+import React, { useState, useMemo } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { Activity, Filter, Lock, Minimize2 } from 'lucide-react';
+
+const KinematicsDashboard = () => {
+  // UI State Toggles
+  const [showRaw, setShowRaw] = useState(true);
+  const [showKalman, setShowKalman] = useState(false);
+  const [showSmoothed, setShowSmoothed] = useState(false);
+  const [scaleLocked, setScaleLocked] = useState(true);
+
+  // Simulate the Kinematic Data (This mimics your Python backend)
+  const chartData = useMemo(() => {
+    const data = [];
+    let kalmanEstimate = 0;
+    const errorMeasure = 5.0; // Simulated SAM 3D noise variance
+    let errorEstimate = 1.0;
+
+    for (let i = 0; i < 100; i++) {
+      // 1. Base Truth: A sine wave representing a normal walking gait cycle
+      const phase = (i / 100) * Math.PI * 4; // 2 steps
+      let trueAngle = 30 + 30 * Math.sin(phase); 
+      
+      // Simulate "Bone Scaling" issue if not locked
+      if (!scaleLocked) {
+        trueAngle *= (1 + 0.15 * Math.sin(phase * 0.5)); 
+      }
+
+      // 2. Raw SAM 3D Output (Add noise and occasional occlusions/spikes)
+      let rawAngle = trueAngle + (Math.random() * 10 - 5);
+      if (Math.random() > 0.95) rawAngle += (Math.random() > 0.5 ? 25 : -25); // Major spike
+
+      // 3. Simple 1D Kalman Filter
+      const kalmanGain = errorEstimate / (errorEstimate + errorMeasure);
+      kalmanEstimate = kalmanEstimate + kalmanGain * (rawAngle - kalmanEstimate);
+      errorEstimate = (1 - kalmanGain) * errorEstimate;
+
+      data.push({
+        frame: i,
+        trueAngle: trueAngle,
+        rawAngle: rawAngle,
+        kalmanAngle: i === 0 ? rawAngle : kalmanEstimate, // Avoid 0 start
+        smoothedAngle: null // Calculated next
+      });
+    }
+
+    // 4. Sliding Window (Moving Average) applied to Kalman output
+    const windowSize = 7;
+    for (let i = 0; i < data.length; i++) {
+      let sum = 0;
+      let count = 0;
+      for (let j = Math.max(0, i - Math.floor(windowSize / 2)); j <= Math.min(data.length - 1, i + Math.floor(windowSize / 2)); j++) {
+        sum += data[j].kalmanAngle;
+        count++;
+      }
+      data[i].smoothedAngle = sum / count;
+    }
+
+    return data;
+  }, [scaleLocked]);
+
+  return (
+    <div className="flex flex-col md:flex-row gap-6 p-6 bg-slate-900 text-slate-100 rounded-xl font-sans min-h-[600px]">
+      
+      {/* Chart Section */}
+      <div className="flex-1 bg-slate-800 p-4 rounded-lg border border-slate-700 shadow-xl">
+        <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+          <Activity className="text-cyan-400" />
+          Knee Flexion Kinematics (Right Leg)
+        </h2>
+        
+        <div className="h-[450px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 20, right: 30, left: 0, bottom: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="frame" stroke="#94a3b8" label={{ value: 'Frames', position: 'bottom', fill: '#94a3b8' }} />
+              <YAxis stroke="#94a3b8" label={{ value: 'Angle (Degrees)', angle: -90, position: 'insideLeft', fill: '#94a3b8' }} domain={[-10, 90]} />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#1e293b', borderColor: '#475569', color: '#f8fafc' }}
+                itemStyle={{ color: '#f8fafc' }}
+              />
+              <Legend verticalAlign="top" height={36} />
+              
+              {/* Invisible reference line for scaling */}
+              <Line type="monotone" dataKey="trueAngle" stroke="transparent" dot={false} activeDot={false} />
+
+              {showRaw && (
+                <Line type="step" dataKey="rawAngle" name="Raw Model Output" stroke="#ef4444" strokeWidth={2} dot={false} opacity={0.6} />
+              )}
+              {showKalman && (
+                <Line type="monotone" dataKey="kalmanAngle" name="Kalman Filter" stroke="#eab308" strokeWidth={2} dot={false} />
+              )}
+              {showSmoothed && (
+                <Line type="monotone" dataKey="smoothedAngle" name="Sliding Window (Final)" stroke="#06b6d4" strokeWidth={3} dot={false} />
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Control Panel Section */}
+      <div className="w-full md:w-80 flex flex-col gap-4">
+        <div className="bg-slate-800 p-5 rounded-lg border border-slate-700 shadow-xl">
+          <h3 className="text-lg font-semibold mb-4 border-b border-slate-700 pb-2">Optimization Layers</h3>
+          
+          <div className="space-y-4">
+            {/* Toggle Raw */}
+            <label className="flex items-start gap-3 cursor-pointer group">
+              <input type="checkbox" checked={showRaw} onChange={(e) => setShowRaw(e.target.checked)} className="mt-1 w-4 h-4 accent-red-500" />
+              <div>
+                <span className={`block font-medium ${showRaw ? 'text-red-400' : 'text-slate-400'}`}>1. Raw SAM 3D Data</span>
+                <span className="text-xs text-slate-500">Unfiltered frame-by-frame extraction. Notice the high-frequency jitter.</span>
+              </div>
+            </label>
+
+            {/* Toggle Kalman */}
+            <label className="flex items-start gap-3 cursor-pointer group">
+              <input type="checkbox" checked={showKalman} onChange={(e) => setShowKalman(e.target.checked)} className="mt-1 w-4 h-4 accent-yellow-500" />
+              <div>
+                <span className={`block font-medium ${showKalman ? 'text-yellow-400' : 'text-slate-400'}`}>2. Apply Kalman Filter</span>
+                <span className="text-xs text-slate-500">Eliminates massive spikes from occlusions using state prediction.</span>
+              </div>
+            </label>
+
+            {/* Toggle Smoothed */}
+            <label className="flex items-start gap-3 cursor-pointer group">
+              <input type="checkbox" checked={showSmoothed} onChange={(e) => setShowSmoothed(e.target.checked)} className="mt-1 w-4 h-4 accent-cyan-500" />
+              <div>
+                <span className={`block font-medium ${showSmoothed ? 'text-cyan-400' : 'text-slate-400'}`}>3. Sliding Window Smoothing</span>
+                <span className="text-xs text-slate-500">Applies moving average to create a biologically plausible, clinical-grade curve.</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div className="bg-slate-800 p-5 rounded-lg border border-slate-700 shadow-xl">
+          <h3 className="text-lg font-semibold mb-4 border-b border-slate-700 pb-2">Scale & Identity</h3>
+          
+          {/* Toggle Bone Lock */}
+          <label className="flex items-start gap-3 cursor-pointer group">
+            <input type="checkbox" checked={scaleLocked} onChange={(e) => setScaleLocked(e.target.checked)} className="mt-1 w-4 h-4 accent-emerald-500" />
+            <div>
+              <span className={`block font-medium ${scaleLocked ? 'text-emerald-400' : 'text-slate-400'}`}>Bone Scale Locking</span>
+              <span className="text-xs text-slate-500">Locks femur/tibia length. Uncheck to see how depth ambiguity warps the angle amplitude over time.</span>
+            </div>
+          </label>
+        </div>
+      </div>
+
+    </div>
+  );
+};
+
+export default KinematicsDashboard;

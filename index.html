@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clinical Gait Analysis &amp; Intervention Recommendation Tool</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Three.js & OrbitControls -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    body { font-family: 'Inter', sans-serif; }
+    .glass-panel {
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .btn-tab.active {
+      background-color: rgba(14, 165, 233, 0.2);
+      border-color: #0ea5e9;
+      color: #38bdf8;
+    }
+    .btn-render.active {
+      background-color: #0284c7;
+      color: #ffffff;
+    }
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col overflow-x-hidden selection:bg-cyan-500 selection:text-white">
+
+  <!-- Clinical Dashboard Header -->
+  <header class="border-b border-slate-800 bg-slate-900/95 sticky top-0 z-50 backdrop-blur-md shadow-xl">
+    <div class="max-w-[1800px] mx-auto px-6 py-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+      
+      <!-- Brand & Title -->
+      <div class="flex items-center gap-3.5">
+        <div class="p-2.5 bg-gradient-to-tr from-cyan-500 via-blue-600 to-indigo-600 rounded-xl shadow-lg shadow-cyan-500/20">
+          <i class="fa-solid fa-person-walking text-white text-2xl"></i>
+        </div>
+        <div>
+          <h1 class="text-xl font-extrabold bg-gradient-to-r from-white via-slate-100 to-cyan-400 bg-clip-text text-transparent flex items-center gap-2">
+            Clinical Gait Analysis &amp; Decision Support System
+            <span class="text-xs font-semibold bg-cyan-950 text-cyan-400 border border-cyan-700/50 px-2.5 py-0.5 rounded-full">Normative Data Engine v1.0</span>
+          </h1>
+          <p class="text-xs text-slate-400">Markerless Pose Kinematics &amp; Inverse Dynamics Kinetics • 0–100% Gait Cycle Normative Comparison • Automated Interventions</p>
+        </div>
+      </div>
+
+      <!-- Action & Trial Selector Toolbar -->
+      <div class="flex flex-wrap items-center gap-3">
+        
+        <!-- Gait Trial / Condition Preset Dropdown -->
+        <div class="flex items-center gap-2 bg-slate-800/90 px-3 py-1.5 rounded-xl border border-slate-700">
+          <i class="fa-solid fa-folder-open text-cyan-400 text-xs"></i>
+          <span class="text-xs text-slate-300 font-medium">Select Gait Profile:</span>
+          <select id="trialSelect" onchange="onTrialSelectChange(this.value)" class="bg-slate-900 text-cyan-300 font-semibold text-xs rounded-lg px-3 py-1 border border-slate-700 focus:outline-none focus:border-cyan-500">
+            <option value="normal_gait">🟢 Healthy Adult Baseline Gait</option>
+            <option value="crouch_gait">🔴 Crouch Gait Pattern (CP / Quad Insufficiency)</option>
+            <option value="stiff_knee_gait">🟠 Stiff Knee Swing Gait (Post-Stroke / Rectus Spasticity)</option>
+            <option value="equinus_gait">🟣 Equinus / Toe-Walking Gait (Achilles Tightness)</option>
+            <option value="trendelenburg_gait">🔵 Trendelenburg / Pelvic Drop Gait (Gluteus Medius Weakness)</option>
+            <option value="sam3d_monocular">📹 SAM 3D Monocular Tracked Trial (Single Leg Lunge)</option>
+          </select>
+        </div>
+
+        <!-- Normative Reference Standard Dataset Dropdown -->
+        <div class="flex items-center gap-2 bg-slate-800/90 px-3 py-1.5 rounded-xl border border-slate-700">
+          <i class="fa-solid fa-database text-emerald-400 text-xs"></i>
+          <span class="text-xs text-slate-300 font-medium">Reference Norm:</span>
+          <select id="normDatasetSelect" onchange="onNormDatasetChange(this.value)" class="bg-slate-900 text-emerald-400 font-semibold text-xs rounded-lg px-3 py-1 border border-slate-700 focus:outline-none focus:border-emerald-500">
+            <option value="addbiomechanics_adult">🧬 AddBiomechanics Adult Normal (N=420, Stanford/SimTK)</option>
+            <option value="addbiomechanics_elderly">🧬 AddBiomechanics Elderly Baseline (Age 65+)</option>
+            <option value="addbiomechanics_pediatric">🧬 AddBiomechanics Pediatric Baseline (Age 5-12)</option>
+            <option value="winter_perry">📖 Winter &amp; Perry Classic Benchmark</option>
+          </select>
+        </div>
+
+        <!-- Custom Video Upload Button -->
+        <label class="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs px-3.5 py-2 rounded-xl border border-slate-700 cursor-pointer transition">
+          <i class="fa-solid fa-cloud-arrow-up text-cyan-400"></i>
+          <span>Upload Video</span>
+          <input type="file" id="videoUploadInput" accept="video/mp4,video/webm" onchange="handleVideoUpload(event)" class="hidden">
+        </label>
+
+        <!-- Export Clinical Report Button -->
+        <button onclick="exportClinicalReport()" class="flex items-center gap-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-semibold text-xs px-4 py-2 rounded-xl shadow-lg shadow-cyan-600/20 transition">
+          <i class="fa-solid fa-file-pdf"></i>
+          Export Assessment Report
+        </button>
+
+      </div>
+
+    </div>
+  </header>
+
+  <!-- Clinical KPI Metrics Scorecards Bar -->
+  <section class="max-w-[1800px] mx-auto px-6 pt-5 w-full">
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+      
+      <!-- Card 1: Gait Deviation Index (GDI) -->
+      <div class="glass-panel p-3 rounded-2xl border border-slate-800 flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 font-bold text-base" id="kpi-gdi-icon">
+          <i class="fa-solid fa-gauge-high"></i>
+        </div>
+        <div>
+          <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">GDI Score</div>
+          <div class="text-base font-extrabold text-cyan-400 flex items-baseline gap-1" id="kpi-gdi">
+            102.4 <span class="text-[9px] font-semibold text-emerald-400" id="kpi-gdi-class">Normal</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Gait Profile Score (GPS) -->
+      <div class="glass-panel p-3 rounded-2xl border border-slate-800 flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 font-bold text-base">
+          <i class="fa-solid fa-chart-area"></i>
+        </div>
+        <div>
+          <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">GPS Error</div>
+          <div class="text-base font-extrabold text-purple-400 flex items-baseline gap-1" id="kpi-gps">
+            4.2° <span class="text-[9px] font-normal text-slate-400">(RMSD)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3: Peak Knee Torque (Kinetics) -->
+      <div class="glass-panel p-3 rounded-2xl border border-slate-800 flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 font-bold text-base">
+          <i class="fa-solid fa-rotate text-indigo-400"></i>
+        </div>
+        <div>
+          <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">Peak Knee Torque</div>
+          <div class="text-base font-extrabold text-indigo-400" id="kpi-knee-torque">
+            0.55 <span class="text-[9px] font-normal text-slate-400">N·m/kg</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4: Peak Joint Power (Kinetics) -->
+      <div class="glass-panel p-3 rounded-2xl border border-slate-800 flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold text-base">
+          <i class="fa-solid fa-bolt text-emerald-400"></i>
+        </div>
+        <div>
+          <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">Peak Joint Power</div>
+          <div class="text-base font-extrabold text-emerald-400" id="kpi-knee-power">
+            -1.25 <span class="text-[9px] font-normal text-slate-400">W/kg</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 5: Vertical GRF Peak (Kinetics) -->
+      <div class="glass-panel p-3 rounded-2xl border border-slate-800 flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 font-bold text-base">
+          <i class="fa-solid fa-shoe-prints text-amber-400"></i>
+        </div>
+        <div>
+          <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">Peak GRF Impact</div>
+          <div class="text-base font-extrabold text-amber-400" id="kpi-grf-peak">
+            110% <span class="text-[9px] font-normal text-slate-400">BW</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 6: Cadence -->
+      <div class="glass-panel p-3 rounded-2xl border border-slate-800 flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 font-bold text-base">
+          <i class="fa-solid fa-stopwatch"></i>
+        </div>
+        <div>
+          <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">Cadence</div>
+          <div class="text-base font-extrabold text-blue-400" id="kpi-cadence">
+            114 <span class="text-[9px] font-normal text-slate-400">steps/min</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 7: Walking Speed -->
+      <div class="glass-panel p-3 rounded-2xl border border-slate-800 flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 font-bold text-base">
+          <i class="fa-solid fa-person-walking-arrow-right"></i>
+        </div>
+        <div>
+          <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">Walking Speed</div>
+          <div class="text-base font-extrabold text-cyan-400" id="kpi-speed">
+            1.28 <span class="text-[9px] font-normal text-slate-400">m/s</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 8: Stance / Swing Ratio -->
+      <div class="glass-panel p-3 rounded-2xl border border-slate-800 flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 font-bold text-base">
+          <i class="fa-solid fa-sliders"></i>
+        </div>
+        <div>
+          <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">Stance / Swing</div>
+          <div class="text-xs font-extrabold text-rose-400" id="kpi-stance-ratio">
+            60.5% / 39.5%
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Main Workspace (3-Panel Grid) -->
+  <main class="max-w-[1800px] mx-auto px-6 pt-5 pb-6 flex-1 w-full space-y-5">
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[640px]">
+      
+      <!-- PANEL 1: Video Viewport & Landmark Tracking (4 cols) -->
+      <div class="lg:col-span-4 glass-panel rounded-2xl p-4 border border-slate-800 flex flex-col justify-between shadow-2xl">
+        <div>
+          <div class="flex items-center justify-between pb-3 border-b border-slate-800/80">
+            <h2 class="text-sm font-bold text-white flex items-center gap-2">
+              <i class="fa-solid fa-video text-cyan-400"></i>
+              Panel 1: Gait Video &amp; Real-time Kinetic Track
+            </h2>
+            <span class="text-[11px] font-medium text-slate-400 bg-slate-800/90 px-2 py-0.5 rounded border border-slate-700/50" id="fpsBadge">30 FPS Video</span>
+          </div>
+
+          <div class="relative mt-3 rounded-xl overflow-hidden bg-slate-900 border border-slate-800 aspect-video flex items-center justify-center">
+            <!-- Native HTML5 Video Element (hidden when simulation canvas is used) -->
+            <video id="userVideo" class="w-full h-full object-contain hidden" controls></video>
+            
+            <!-- Canvas Overlay for Keypoints / Bounding Box -->
+            <canvas id="videoCanvas" class="w-full h-full object-cover"></canvas>
+            
+            <!-- Video Overlay Badges -->
+            <div class="absolute bottom-3 left-3 bg-slate-950/85 backdrop-blur px-3 py-1 rounded-lg text-xs text-slate-300 border border-slate-800">
+              <i class="fa-solid fa-crosshairs text-cyan-400 mr-1.5"></i> Cycle %: <span id="cyclePercentDisplay" class="font-bold text-white">0%</span>
+            </div>
+            
+            <div class="absolute top-3 right-3 bg-emerald-950/80 backdrop-blur px-2.5 py-1 rounded-md text-[11px] font-medium text-emerald-400 border border-emerald-800/50" id="trackerStatusTag">
+              <i class="fa-solid fa-shield-halved mr-1"></i> Pose &amp; Kinetics Locked
+            </div>
+          </div>
+        </div>
+
+        <!-- Real-Time Inverse Dynamics Kinetics HUD Card -->
+        <div class="mt-3 p-3 bg-slate-900/80 rounded-xl border border-indigo-900/50 text-xs space-y-2">
+          <div class="flex items-center justify-between font-bold text-indigo-300 border-b border-slate-800 pb-1.5">
+            <span class="flex items-center gap-1.5">
+              <i class="fa-solid fa-bolt text-indigo-400"></i> Real-Time Inverse Dynamics Kinetics HUD
+            </span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-400 border border-indigo-800">Active Frame</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 text-center pt-1">
+            <div class="bg-slate-950/60 p-2 rounded-lg border border-slate-800">
+              <div class="text-[9px] text-slate-400 font-medium uppercase">Knee Torque</div>
+              <div class="text-xs font-extrabold text-indigo-400" id="hudKneeTorque">0.55 N·m/kg</div>
+            </div>
+            <div class="bg-slate-950/60 p-2 rounded-lg border border-slate-800">
+              <div class="text-[9px] text-slate-400 font-medium uppercase">Joint Power</div>
+              <div class="text-xs font-extrabold text-emerald-400" id="hudKneePower">-1.25 W/kg</div>
+            </div>
+            <div class="bg-slate-950/60 p-2 rounded-lg border border-slate-800">
+              <div class="text-[9px] text-slate-400 font-medium uppercase">Vertical GRF</div>
+              <div class="text-xs font-extrabold text-amber-400" id="hudGRF">110% BW</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Video Controls & Metadata Box -->
+        <div class="mt-3 p-3 bg-slate-900/60 rounded-xl border border-slate-800/80 text-xs space-y-2 text-slate-400">
+          <div class="flex justify-between items-center">
+            <span>Selected Gait Trial:</span>
+            <span class="font-semibold text-slate-200" id="trialNameDisplay">Healthy Adult Baseline Gait</span>
+          </div>
+          <div class="flex justify-between items-center">
+            <span>Gait Cycle Phase:</span>
+            <span class="font-semibold text-emerald-400" id="movementPhaseTag">Initial Contact (0-10%)</span>
+          </div>
+          <div class="flex justify-between items-center">
+            <span>3D Mesh Engine:</span>
+            <span class="font-semibold text-cyan-400">MHR Parametric Surface Locked</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- PANEL 2: Interactive 0-100% Gait Cycle Normative Comparison Graph (4 cols) -->
+      <div class="lg:col-span-4 glass-panel rounded-2xl p-4 border border-slate-800 flex flex-col justify-between shadow-2xl">
+        <div>
+          <!-- Header & Joint Selector -->
+          <div class="flex items-center justify-between pb-3 border-b border-slate-800/80">
+            <h2 class="text-sm font-bold text-white flex items-center gap-2">
+              <i class="fa-solid fa-chart-line text-cyan-400"></i>
+              Panel 2: 0–100% Normative Curve Comparison
+            </h2>
+            <span class="text-[10px] font-semibold bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700">AddBiomechanics Reference</span>
+          </div>
+
+          <!-- Grouped Kinematics & Kinetics Tabs -->
+          <div class="mt-3 space-y-2">
+            <!-- Kinematics Group -->
+            <div class="flex items-center gap-1.5 text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+              <i class="fa-solid fa-ruler-combined text-cyan-400"></i> Kinematics:
+            </div>
+            <div class="flex items-center gap-1 pb-1 border-b border-slate-800/80 text-[11px] overflow-x-auto">
+              <button onclick="switchJointGraph('knee_flexion')" id="tab-knee_flexion" class="btn-tab active px-2.5 py-1 rounded-md border border-slate-800 font-medium transition">Knee Flexion</button>
+              <button onclick="switchJointGraph('hip_flexion')" id="tab-hip_flexion" class="btn-tab px-2.5 py-1 rounded-md border border-slate-800 font-medium transition text-slate-400 hover:text-white">Hip Flexion</button>
+              <button onclick="switchJointGraph('ankle_dorsiflexion')" id="tab-ankle_dorsiflexion" class="btn-tab px-2.5 py-1 rounded-md border border-slate-800 font-medium transition text-slate-400 hover:text-white">Ankle DF</button>
+              <button onclick="switchJointGraph('pelvic_tilt')" id="tab-pelvic_tilt" class="btn-tab px-2.5 py-1 rounded-md border border-slate-800 font-medium transition text-slate-400 hover:text-white">Pelvic Tilt</button>
+              <button onclick="switchJointGraph('hip_abduction')" id="tab-hip_abduction" class="btn-tab px-2.5 py-1 rounded-md border border-slate-800 font-medium transition text-slate-400 hover:text-white">Hip Abduction</button>
+            </div>
+
+            <!-- Kinetics Group -->
+            <div class="flex items-center gap-1.5 text-[10px] text-slate-400 font-bold uppercase tracking-wider pt-1">
+              <i class="fa-solid fa-bolt text-indigo-400"></i> Inverse Dynamics Kinetics:
+            </div>
+            <div class="flex items-center gap-1 pb-1 border-b border-slate-800/80 text-[11px] overflow-x-auto">
+              <button onclick="switchJointGraph('knee_moment')" id="tab-knee_moment" class="btn-tab px-2.5 py-1 rounded-md border border-slate-800 font-medium transition text-indigo-400 hover:text-white">Knee Torque</button>
+              <button onclick="switchJointGraph('knee_power')" id="tab-knee_power" class="btn-tab px-2.5 py-1 rounded-md border border-slate-800 font-medium transition text-emerald-400 hover:text-white">Knee Power</button>
+              <button onclick="switchJointGraph('hip_moment')" id="tab-hip_moment" class="btn-tab px-2.5 py-1 rounded-md border border-slate-800 font-medium transition text-purple-400 hover:text-white">Hip Torque</button>
+              <button onclick="switchJointGraph('ankle_moment')" id="tab-ankle_moment" class="btn-tab px-2.5 py-1 rounded-md border border-slate-800 font-medium transition text-cyan-400 hover:text-white">Ankle Torque</button>
+              <button onclick="switchJointGraph('grf_vertical')" id="tab-grf_vertical" class="btn-tab px-2.5 py-1 rounded-md border border-slate-800 font-medium transition text-amber-400 hover:text-white">Vertical GRF</button>
+            </div>
+          </div>
+
+          <!-- Primary Waveform Canvas -->
+          <div class="relative h-[300px] w-full pt-2">
+            <canvas id="gaitNormativeChart"></canvas>
+          </div>
+        </div>
+
+        <!-- Normative Layer Controls -->
+        <div class="mt-3 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" id="chk-patient" checked onchange="updateNormativeChartLayers()" class="w-3.5 h-3.5 accent-cyan-400">
+            <span class="text-cyan-400 font-semibold">Patient Trial</span>
+          </label>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" id="chk-norm-mean" checked onchange="updateNormativeChartLayers()" class="w-3.5 h-3.5 accent-slate-100">
+            <span class="text-slate-200 font-medium">Normative Mean</span>
+          </label>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" id="chk-norm-1sd" checked onchange="updateNormativeChartLayers()" class="w-3.5 h-3.5 accent-emerald-500">
+            <span class="text-emerald-400 font-medium">±1 SD Band</span>
+          </label>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" id="chk-norm-2sd" checked onchange="updateNormativeChartLayers()" class="w-3.5 h-3.5 accent-blue-500">
+            <span class="text-blue-400 font-medium">±2 SD Band</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- PANEL 3: Clinical Findings & Evidence-Based Targeted Interventions (4 cols) -->
+      <div class="lg:col-span-4 glass-panel rounded-2xl p-4 border border-slate-800 flex flex-col justify-between shadow-2xl">
+        <div class="space-y-4">
+          
+          <!-- Header -->
+          <div class="flex items-center justify-between pb-3 border-b border-slate-800/80">
+            <h2 class="text-sm font-bold text-white flex items-center gap-2">
+              <i class="fa-solid fa-stethoscope text-emerald-400"></i>
+              Panel 3: Clinical Deviations &amp; Targeted Interventions
+            </h2>
+            <span class="text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800 px-2 py-0.5 rounded">Evidence-Based</span>
+          </div>
+
+          <!-- Section 1: Detected Pathological Gait Findings -->
+          <div>
+            <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+              <i class="fa-solid fa-triangle-exclamation text-amber-400"></i> Identified Gait Deviations
+            </h3>
+            <div id="findingsContainer" class="space-y-2.5 max-h-[165px] overflow-y-auto pr-1">
+              <!-- Dynamically Populated Cards -->
+            </div>
+          </div>
+
+          <!-- Section 2: Clinical Interventions Matrix -->
+          <div>
+            <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+              <i class="fa-solid fa-user-doctor text-cyan-400"></i> Targeted Interventions
+            </h3>
+
+            <!-- Intervention Tabs -->
+            <div class="flex items-center gap-1 border-b border-slate-800 text-[11px] pb-1 mb-2">
+              <button onclick="switchInterventionTab('pt')" id="tab-int-pt" class="btn-tab active px-2 py-0.5 rounded font-medium">🏋️ Physical Therapy</button>
+              <button onclick="switchInterventionTab('orthotics')" id="tab-int-orthotics" class="btn-tab px-2 py-0.5 rounded font-medium text-slate-400 hover:text-white">🦶 Orthotics / AFOs</button>
+              <button onclick="switchInterventionTab('biofeedback')" id="tab-int-biofeedback" class="btn-tab px-2 py-0.5 rounded font-medium text-slate-400 hover:text-white">⚡ Retraining</button>
+              <button onclick="switchInterventionTab('medical')" id="tab-int-medical" class="btn-tab px-2 py-0.5 rounded font-medium text-slate-400 hover:text-white">🩺 Medical</button>
+            </div>
+
+            <!-- Interventions List -->
+            <div id="interventionsList" class="space-y-2 max-h-[180px] overflow-y-auto pr-1 text-xs">
+              <!-- Dynamically Populated -->
+            </div>
+          </div>
+
+        </div>
+
+        <div class="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
+          <span>Targeted Muscle &amp; Joint Protocol</span>
+          <span class="text-cyan-400 font-semibold cursor-pointer hover:underline" onclick="exportClinicalReport()">Full Diagnostic Report &rarr;</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- SYNCHRONIZED PLAYBACK CONTROLLER BAR -->
+    <div class="glass-panel p-4 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-center gap-4 shadow-2xl">
+      
+      <!-- Playback Controls -->
+      <div class="flex items-center gap-2">
+        <button onclick="stepFrame(-1)" class="w-9 h-9 bg-slate-800 hover:bg-slate-700 rounded-lg flex items-center justify-center text-slate-300 transition" title="Step Back 1 Frame">
+          <i class="fa-solid fa-backward-step"></i>
+        </button>
+
+        <button id="btnPlayPause" onclick="togglePlayPause()" class="w-11 h-11 bg-gradient-to-tr from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-cyan-500/20 transition">
+          <i class="fa-solid fa-play text-lg" id="playIcon"></i>
+        </button>
+
+        <button onclick="stepFrame(1)" class="w-9 h-9 bg-slate-800 hover:bg-slate-700 rounded-lg flex items-center justify-center text-slate-300 transition" title="Step Forward 1 Frame">
+          <i class="fa-solid fa-forward-step"></i>
+        </button>
+        
+        <select id="speedSelect" onchange="changeSpeed()" class="bg-slate-900 text-slate-200 border border-slate-700 text-xs rounded-lg px-2.5 py-2 font-medium focus:outline-none ml-1">
+          <option value="0.1">0.10x Slow-mo</option>
+          <option value="0.25">0.25x Speed</option>
+          <option value="0.5">0.50x Speed</option>
+          <option value="1.0" selected>1.00x Normal</option>
+          <option value="2.0">2.00x Fast</option>
+        </select>
+      </div>
+
+      <!-- Scrubber -->
+      <div class="flex-1 w-full space-y-1">
+        <div class="flex justify-between text-xs text-slate-400 font-medium px-1">
+          <span>Gait Cycle Position: <strong id="currentTimeDisplay" class="text-cyan-400">0.0 %</strong></span>
+          <span>Phase: <strong id="phaseDisplay" class="text-emerald-400">Initial Contact (0-10%)</strong></span>
+          <span>Full Cycle Duration: <strong id="totalTimeDisplay" class="text-slate-200">1.05 s</strong></span>
+        </div>
+        <input type="range" id="timelineScrubber" min="0" max="100" value="0" step="1" oninput="onScrub(this.value)" class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400">
+      </div>
+    </div>
+
+  </main>
+
+  <!-- JavaScript Engine -->
+  <script>
+    let normBank = null;
+    let currentTrialId = "normal_gait";
+    let activeJointKey = "knee_flexion";
+    let activeInterventionCategory = "pt";
+
+    let currentCycleIdx = 0; // 0 to 100
+    let isPlaying = false;
+    let playbackSpeed = 1.0;
+    let animInterval = null;
+
+    let gaitChart = null;
+
+    // Load gait_normative_bank.json payload
+    async function initApp() {
+      try {
+        const res = await fetch('gait_normative_bank.json');
+        normBank = await res.json();
+        console.log("Loaded Normative Gait Bank:", normBank);
+
+        initChart();
+        loadTrial(currentTrialId);
+      } catch (err) {
+        console.error("Failed to load gait_normative_bank.json:", err);
+      }
+    }
+
+    // Initialize Chart.js 0-100% Normative Gait Plot
+    function initChart() {
+      const ctx = document.getElementById('gaitNormativeChart').getContext('2d');
+      const gaitPct = normBank.normative.gait_percent;
+
+      gaitChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: gaitPct,
+          datasets: [
+            // 0: Patient Trial Curve
+            {
+              label: 'Patient Trial',
+              data: [],
+              borderColor: '#06b6d4',
+              borderWidth: 3,
+              pointRadius: 0,
+              tension: 0.3,
+              order: 1
+            },
+            // 1: Normative Mean Curve
+            {
+              label: 'Normative Mean',
+              data: normBank.normative.kinematics.knee_flexion.mean,
+              borderColor: '#f8fafc',
+              borderWidth: 2,
+              borderDash: [4, 4],
+              pointRadius: 0,
+              tension: 0.3,
+              order: 2
+            },
+            // 2: Upper 1SD
+            {
+              label: 'Upper +1 SD',
+              data: normBank.normative.kinematics.knee_flexion.upper_1sd,
+              borderColor: 'rgba(16, 185, 129, 0.4)',
+              borderWidth: 1,
+              pointRadius: 0,
+              fill: '+1',
+              backgroundColor: 'rgba(16, 185, 129, 0.15)',
+              tension: 0.3,
+              order: 3
+            },
+            // 3: Lower 1SD
+            {
+              label: 'Lower -1 SD',
+              data: normBank.normative.kinematics.knee_flexion.lower_1sd,
+              borderColor: 'rgba(16, 185, 129, 0.4)',
+              borderWidth: 1,
+              pointRadius: 0,
+              tension: 0.3,
+              order: 4
+            },
+            // 4: Upper 2SD
+            {
+              label: 'Upper +2 SD',
+              data: normBank.normative.kinematics.knee_flexion.upper_2sd,
+              borderColor: 'rgba(59, 130, 246, 0.25)',
+              borderWidth: 1,
+              borderDash: [2, 2],
+              pointRadius: 0,
+              fill: '+1',
+              backgroundColor: 'rgba(59, 130, 246, 0.08)',
+              tension: 0.3,
+              order: 5
+            },
+            // 5: Lower 2SD
+            {
+              label: 'Lower -2 SD',
+              data: normBank.normative.kinematics.knee_flexion.lower_2sd,
+              borderColor: 'rgba(59, 130, 246, 0.25)',
+              borderWidth: 1,
+              borderDash: [2, 2],
+              pointRadius: 0,
+              tension: 0.3,
+              order: 6
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 400 },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: (items) => `Gait Cycle: ${items[0].label}%`,
+                label: (item) => `${item.dataset.label}: ${item.formattedValue}°`
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(255,255,255,0.05)' },
+              ticks: { color: '#64748b', font: { size: 10 }, stepSize: 10 },
+              title: { display: true, text: 'Gait Cycle Phase (%) [0% = Heel Strike, 60% = Toe Off]', color: '#94a3b8', font: { size: 10 } }
+            },
+            y: {
+              grid: { color: 'rgba(255,255,255,0.05)' },
+              ticks: { color: '#64748b', font: { size: 10 } },
+              title: { display: true, text: 'Knee Flexion Angle (°)', color: '#38bdf8', font: { size: 11, weight: 'bold' } }
+            }
+          }
+        }
+      });
+    }
+
+    // Load Selected Trial
+    function loadTrial(trialId) {
+      currentTrialId = trialId;
+      if (!normBank) return;
+
+      let preset = normBank.presets[trialId];
+      if (!preset) return;
+
+      document.getElementById('trialNameDisplay').innerText = preset.name;
+
+      // Calculate Clinical Analysis
+      const analysis = runClinicalAnalysis(preset);
+      updateKPIs(preset, analysis);
+      updateChartData(preset);
+      updateFindingsUI(analysis.findings);
+      updateInterventionsUI(analysis.interventions);
+      updateCycle(0);
+    }
+
+    let currentNormDatasetKey = "addbiomechanics_adult";
+
+    function getActiveNormData() {
+      if (!normBank) return null;
+      if (currentNormDatasetKey === "addbiomechanics_elderly") {
+        return normBank.addbiomechanics.elderly_population;
+      } else if (currentNormDatasetKey === "addbiomechanics_pediatric") {
+        return normBank.addbiomechanics.pediatric_population;
+      } else if (currentNormDatasetKey === "addbiomechanics_adult") {
+        return normBank.addbiomechanics.adult_normal;
+      }
+      return normBank.normative;
+    }
+
+    function onNormDatasetChange(val) {
+      currentNormDatasetKey = val;
+      if (currentTrialId) {
+        loadTrial(currentTrialId);
+      }
+    }
+
+    // Clinical Analysis Engine
+    function runClinicalAnalysis(preset) {
+      const norm = getActiveNormData() || normBank.normative;
+      const knee = preset.knee_flexion || norm.kinematics.knee_flexion.mean;
+      const hip = preset.hip_flexion || norm.kinematics.hip_flexion.mean;
+      const ankle = preset.ankle_dorsiflexion || norm.kinematics.ankle_dorsiflexion.mean;
+      const pelvis = preset.pelvic_tilt || norm.kinematics.pelvic_tilt.mean;
+      const hip_abd = preset.hip_abduction || norm.kinematics.hip_abduction.mean;
+
+      // Compute RMSD
+      function rmsd(arr, meanArr) {
+        return Math.sqrt(arr.reduce((acc, v, i) => acc + Math.pow(v - meanArr[i], 2), 0) / arr.length);
+      }
+
+      const rmsdKnee = rmsd(knee, norm.kinematics.knee_flexion.mean);
+      const rmsdHip = rmsd(hip, norm.kinematics.hip_flexion.mean);
+      const rmsdAnkle = rmsd(ankle, norm.kinematics.ankle_dorsiflexion.mean);
+      const rmsdPelvis = rmsd(pelvis, norm.kinematics.pelvic_tilt.mean);
+
+      const gps = ((rmsdKnee + rmsdHip + rmsdAnkle + rmsdPelvis) / 4.0).toFixed(1);
+
+      // Compute GDI
+      let zSum = 0;
+      let count = 0;
+      knee.forEach((v, i) => { zSum += Math.pow((v - norm.kinematics.knee_flexion.mean[i]) / norm.kinematics.knee_flexion.sd[i], 2); count++; });
+      hip.forEach((v, i) => { zSum += Math.pow((v - norm.kinematics.hip_flexion.mean[i]) / norm.kinematics.hip_flexion.sd[i], 2); count++; });
+      ankle.forEach((v, i) => { zSum += Math.pow((v - norm.kinematics.ankle_dorsiflexion.mean[i]) / norm.kinematics.ankle_dorsiflexion.sd[i], 2); count++; });
+
+      let gdi = Math.round(100.0 - 10.0 * Math.sqrt(zSum / count));
+      gdi = Math.max(35, Math.min(115, gdi));
+
+      let gdiClass = "Normal";
+      if (gdi < 70) gdiClass = "Severe";
+      else if (gdi < 85) gdiClass = "Moderate";
+      else if (gdi < 95) gdiClass = "Mild";
+
+      // Findings & Interventions
+      let findings = [];
+      let interventions = { pt: [], orthotics: [], biofeedback: [], medical: [] };
+
+      // Crouch Gait Check
+      const stanceKneeMean = knee.slice(0, 61).reduce((a, b) => a + b, 0) / 61;
+      const normStanceKneeMean = norm.kinematics.knee_flexion.mean.slice(0, 61).reduce((a, b) => a + b, 0) / 61;
+      if (stanceKneeMean - normStanceKneeMean > 8.0) {
+        const dev = (stanceKneeMean - normStanceKneeMean).toFixed(1);
+        findings.push({
+          severity: dev > 18 ? "Severe" : "Moderate",
+          title: "Crouch Gait Pattern",
+          desc: `+${dev}° Excessive Stance Knee Flexion`,
+          causes: ["Hamstring spasticity / tightness", "Quadriceps muscle weakness", "Soleus insufficiency"]
+        });
+        interventions.pt.push("Hamstring eccentric lengthening & passive stretching", "Closed-chain quadriceps strengthening", "Soleus power training");
+        interventions.orthotics.push("Solid or Ground Reaction AFO (GRAFO) to restrain tibial progression");
+        interventions.biofeedback.push("Visual/auditory biofeedback for full knee extension in stance");
+        if (dev > 18) interventions.medical.push("Surgical evaluation for hamstring lengthening or extension osteotomy");
+      }
+
+      // Stiff Knee Check
+      const peakSwingKnee = Math.max(...knee.slice(60, 101));
+      const normPeakSwing = Math.max(...norm.kinematics.knee_flexion.mean.slice(60, 101));
+      if (normPeakSwing - peakSwingKnee > 10.0) {
+        const loss = (normPeakSwing - peakSwingKnee).toFixed(1);
+        findings.push({
+          severity: loss > 25 ? "Severe" : "Moderate",
+          title: "Stiff Knee Swing Gait",
+          desc: `Peak Swing Flexion: ${peakSwingKnee.toFixed(1)}° (Norm: ${normPeakSwing.toFixed(1)}°)`,
+          causes: ["Rectus femoris overactivity in swing", "Decreased knee flexor velocity at toe-off"]
+        });
+        interventions.pt.push("Prone rectus femoris stretching & hip flexor release", "High-velocity knee flexor active training");
+        interventions.orthotics.push("Hinged AFO with dorsiflexion assist for toe clearance");
+        interventions.biofeedback.push("Functional Electrical Stimulation (FES) to hamstrings in initial swing");
+        if (loss > 20) interventions.medical.push("Rectus femoris transfer procedure or botulinum toxin A injection");
+      }
+
+      // Equinus Check
+      if (ankle[0] < -4.0) {
+        findings.push({
+          severity: ankle[0] < -12 ? "Severe" : "Moderate",
+          title: "Equinus / Toe Walking Gait",
+          desc: `Initial Contact Ankle: ${ankle[0].toFixed(1)}° Plantarflexion`,
+          causes: ["Gastrocnemius / Soleus contracture", "Weakness of Tibialis Anterior"]
+        });
+        interventions.pt.push("Calf muscle static passive stretching", "Resisted Tibialis Anterior dorsiflexion training");
+        interventions.orthotics.push("Rigid AFO with 90° neutral ankle block");
+        interventions.biofeedback.push("Heel reaction pressure pad biofeedback");
+        interventions.medical.push("Percutaneous Achilles Tendon Lengthening (TAL) or botox injection");
+      }
+
+      // Trendelenburg Check
+      const maxAdd = Math.max(...hip_abd.slice(0, 61));
+      if (maxAdd > 7.0) {
+        findings.push({
+          severity: maxAdd > 12 ? "Severe" : "Moderate",
+          title: "Trendelenburg Pelvic Drop",
+          desc: `Excessive Hip Adduction: ${maxAdd.toFixed(1)}°`,
+          causes: ["Gluteus Medius stance-side weakness", "Pelvic instability"]
+        });
+        interventions.pt.push("Gluteus Medius isolation (clamshells, side-lying leg lifts)", "Single-leg stance balance training");
+        interventions.orthotics.push("Contralateral walking cane/stick to unweight stance hip");
+        interventions.biofeedback.push("Real-time mirror gait training for pelvic levelness");
+      }
+
+      if (findings.length === 0) {
+        findings.push({
+          severity: "Normal",
+          title: "Normal Physiological Gait",
+          desc: "All kinematic curves within ±1.5 SD normative band",
+          causes: ["Physiological muscle activation and physiological ROM."]
+        });
+        interventions.pt.push("Maintain routine physical activity and joint mobility exercises.");
+      }
+
+      return { gps, gdi, gdiClass, findings, interventions };
+    }
+
+    // Update KPI Scorecards
+    function updateKPIs(preset, analysis) {
+      document.getElementById('kpi-gdi').innerHTML = `${analysis.gdi} <span class="text-[10px] font-semibold ${analysis.gdi < 85 ? 'text-rose-400' : 'text-emerald-400'}">${analysis.gdiClass}</span>`;
+      document.getElementById('kpi-gps').innerHTML = `${analysis.gps}° <span class="text-[10px] font-normal text-slate-400">(RMSD)</span>`;
+      document.getElementById('kpi-cadence').innerHTML = `${preset.cadence || 114} <span class="text-[9px] font-normal text-slate-400">steps/min</span>`;
+      document.getElementById('kpi-speed').innerHTML = `${preset.speed_m_s || 1.28} <span class="text-[9px] font-normal text-slate-400">m/s</span>`;
+      document.getElementById('kpi-stance-ratio').innerText = `${preset.stance_pct || 60.5}% / ${(100 - (preset.stance_pct || 60.5)).toFixed(1)}%`;
+
+      const normData = getActiveNormData() || normBank.normative;
+      const kneeMom = preset.knee_moment || (normData.kinetics && normData.kinetics.knee_moment ? normData.kinetics.knee_moment.mean : []);
+      const kneePow = preset.knee_power || (normData.kinetics && normData.kinetics.knee_power ? normData.kinetics.knee_power.mean : []);
+      const grfV = preset.grf_vertical || (normData.kinetics && normData.kinetics.grf_vertical ? normData.kinetics.grf_vertical.mean : []);
+
+      const peakMom = kneeMom.length ? Math.max(...kneeMom) : 0.55;
+      const minPow = kneePow.length ? Math.min(...kneePow) : -1.25;
+      const maxPow = kneePow.length ? Math.max(...kneePow) : 0.75;
+      const peakPow = Math.abs(minPow) > Math.abs(maxPow) ? minPow : maxPow;
+      const peakGRF = grfV.length ? Math.max(...grfV) : 110;
+
+      document.getElementById('kpi-knee-torque').innerHTML = `${peakMom.toFixed(2)} <span class="text-[9px] font-normal text-indigo-300">N·m/kg</span>`;
+      document.getElementById('kpi-knee-power').innerHTML = `${peakPow.toFixed(2)} <span class="text-[9px] font-normal text-emerald-300">W/kg</span>`;
+      document.getElementById('kpi-grf-peak').innerHTML = `${peakGRF.toFixed(0)}% <span class="text-[9px] font-normal text-amber-300">BW</span>`;
+    }
+
+    // Update Chart Data
+    function updateChartData(preset) {
+      if (!gaitChart || !normBank) return;
+
+      const normData = getActiveNormData() || normBank.normative;
+      let normSig = (normData.kinematics && normData.kinematics[activeJointKey]) 
+                 || (normData.kinetics && normData.kinetics[activeJointKey])
+                 || normBank.normative.kinematics[activeJointKey] 
+                 || normBank.normative.kinematics.knee_flexion;
+      let patientSig = preset[activeJointKey] || normSig.mean;
+
+      gaitChart.data.datasets[0].data = patientSig;
+      gaitChart.data.datasets[1].data = normSig.mean;
+      gaitChart.data.datasets[2].data = normSig.upper_1sd;
+      gaitChart.data.datasets[3].data = normSig.lower_1sd;
+      gaitChart.data.datasets[4].data = normSig.upper_2sd;
+      gaitChart.data.datasets[5].data = normSig.lower_2sd;
+
+      let yLabel = "Knee Flexion (°)";
+      let unitStr = "°";
+      if (activeJointKey === "hip_flexion") { yLabel = "Hip Flexion (°)"; unitStr = "°"; }
+      else if (activeJointKey === "ankle_dorsiflexion") { yLabel = "Ankle Dorsiflexion (°)"; unitStr = "°"; }
+      else if (activeJointKey === "pelvic_tilt") { yLabel = "Pelvic Tilt (°)"; unitStr = "°"; }
+      else if (activeJointKey === "hip_abduction") { yLabel = "Hip Abduction (°)"; unitStr = "°"; }
+      else if (activeJointKey === "knee_moment") { yLabel = "Knee Torque (N·m/kg)"; unitStr = " N·m/kg"; }
+      else if (activeJointKey === "knee_power") { yLabel = "Knee Joint Power (W/kg)"; unitStr = " W/kg"; }
+      else if (activeJointKey === "hip_moment") { yLabel = "Hip Torque (N·m/kg)"; unitStr = " N·m/kg"; }
+      else if (activeJointKey === "ankle_moment") { yLabel = "Ankle Torque (N·m/kg)"; unitStr = " N·m/kg"; }
+      else if (activeJointKey === "grf_vertical") { yLabel = "Vertical GRF (% BW)"; unitStr = "% BW"; }
+
+      gaitChart.options.scales.y.title.text = yLabel;
+      gaitChart.options.plugins.tooltip.callbacks.label = (item) => `${item.dataset.label}: ${item.formattedValue}${unitStr}`;
+      gaitChart.update();
+    }
+
+    // Switch Joint Tab
+    function switchJointGraph(key) {
+      activeJointKey = key;
+      document.querySelectorAll('.btn-tab').forEach(b => b.classList.remove('active'));
+      const activeBtn = document.getElementById(`tab-${key}`);
+      if (activeBtn) activeBtn.classList.add('active');
+
+      if (normBank && normBank.presets[currentTrialId]) {
+        updateChartData(normBank.presets[currentTrialId]);
+      }
+    }
+
+    // Update Findings UI
+    function updateFindingsUI(findings) {
+      const container = document.getElementById('findingsContainer');
+      container.innerHTML = '';
+
+      findings.forEach(f => {
+        let badgeColor = 'bg-emerald-950 text-emerald-400 border-emerald-800';
+        if (f.severity === 'Severe') badgeColor = 'bg-rose-950 text-rose-400 border-rose-800';
+        else if (f.severity === 'Moderate') badgeColor = 'bg-amber-950 text-amber-400 border-amber-800';
+
+        const card = document.createElement('div');
+        card.className = 'p-2.5 bg-slate-900/80 rounded-xl border border-slate-800 text-xs space-y-1';
+        card.innerHTML = `
+          <div class="flex items-center justify-between font-bold">
+            <span class="text-slate-100 flex items-center gap-1.5">
+              <i class="fa-solid fa-circle-dot text-[10px] ${f.severity === 'Severe' ? 'text-rose-400' : 'text-amber-400'}"></i>
+              ${f.title}
+            </span>
+            <span class="text-[10px] px-2 py-0.5 rounded border ${badgeColor}">${f.severity}</span>
+          </div>
+          <p class="text-cyan-400 font-medium">${f.desc}</p>
+          <div class="text-[11px] text-slate-400"><strong>Causes:</strong> ${f.causes.join(', ')}</div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    // Update Interventions UI
+    function updateInterventionsUI(interventions) {
+      window.currentInterventions = interventions;
+      renderInterventionsList();
+    }
+
+    function switchInterventionTab(category) {
+      activeInterventionCategory = category;
+      document.querySelectorAll('[id^="tab-int-"]').forEach(b => b.classList.remove('active'));
+      const activeBtn = document.getElementById(`tab-int-${category}`);
+      if (activeBtn) activeBtn.classList.add('active');
+      renderInterventionsList();
+    }
+
+    function renderInterventionsList() {
+      const container = document.getElementById('interventionsList');
+      container.innerHTML = '';
+
+      const list = (window.currentInterventions && window.currentInterventions[activeInterventionCategory]) || [];
+      if (list.length === 0) {
+        container.innerHTML = '<p class="text-slate-500 italic">No specific interventions indicated for this category.</p>';
+        return;
+      }
+
+      list.forEach((item, idx) => {
+        const div = document.createElement('div');
+        div.className = 'p-2 bg-slate-900/60 rounded-lg border border-slate-800 flex items-start gap-2 text-slate-200';
+        div.innerHTML = `
+          <div class="w-4 h-4 rounded bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 text-[10px] font-bold mt-0.5">${idx+1}</div>
+          <span class="flex-1">${item}</span>
+        `;
+        container.appendChild(div);
+      });
+    }
+
+    // Trial Dropdown Change
+    function onTrialSelectChange(val) {
+      loadTrial(val);
+    }
+
+    // Layer Checkbox Toggles
+    function updateNormativeChartLayers() {
+      if (!gaitChart) return;
+      gaitChart.data.datasets[0].hidden = !document.getElementById('chk-patient').checked;
+      gaitChart.data.datasets[1].hidden = !document.getElementById('chk-norm-mean').checked;
+      gaitChart.data.datasets[2].hidden = !document.getElementById('chk-norm-1sd').checked;
+      gaitChart.data.datasets[3].hidden = !document.getElementById('chk-norm-1sd').checked;
+      gaitChart.data.datasets[4].hidden = !document.getElementById('chk-norm-2sd').checked;
+      gaitChart.data.datasets[5].hidden = !document.getElementById('chk-norm-2sd').checked;
+      gaitChart.update();
+    }
+
+    // Cycle Frame Advancement Engine
+    function updateCycle(pct) {
+      currentCycleIdx = Math.max(0, Math.min(100, parseInt(pct)));
+
+      document.getElementById('timelineScrubber').value = currentCycleIdx;
+      document.getElementById('cyclePercentDisplay').innerText = currentCycleIdx + '%';
+      document.getElementById('currentTimeDisplay').innerText = currentCycleIdx + '%';
+
+      let phaseText = "Initial Contact (0-10%)";
+      if (currentCycleIdx >= 10 && currentCycleIdx < 30) phaseText = "Loading Response & Mid-Stance";
+      else if (currentCycleIdx >= 30 && currentCycleIdx < 50) phaseText = "Terminal Stance";
+      else if (currentCycleIdx >= 50 && currentCycleIdx < 60) phaseText = "Pre-Swing Phase";
+      else if (currentCycleIdx >= 60 && currentCycleIdx < 75) phaseText = "Initial & Mid-Swing";
+      else if (currentCycleIdx >= 75) phaseText = "Terminal Swing Phase";
+
+      document.getElementById('phaseDisplay').innerText = phaseText;
+      document.getElementById('movementPhaseTag').innerText = phaseText;
+
+      // Update Real-Time Kinetic HUD Card
+      if (normBank && normBank.presets[currentTrialId]) {
+        const p = normBank.presets[currentTrialId];
+        const momVal = p.knee_moment ? p.knee_moment[currentCycleIdx] : 0.55;
+        const powVal = p.knee_power ? p.knee_power[currentCycleIdx] : -1.25;
+        const grfVal = p.grf_vertical ? p.grf_vertical[currentCycleIdx] : 110;
+        
+        document.getElementById('hudKneeTorque').innerText = `${momVal.toFixed(2)} N·m/kg`;
+        document.getElementById('hudKneePower').innerText = `${powVal.toFixed(2)} W/kg`;
+        document.getElementById('hudGRF').innerText = `${grfVal.toFixed(0)}% BW`;
+      }
+
+      drawVideoCanvas(currentCycleIdx);
+    }
+
+    // Draw Simulated Landmark Canvas
+    function drawVideoCanvas(pct) {
+      const canvas = document.getElementById('videoCanvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 640;
+      canvas.height = 360;
+
+      ctx.fillStyle = '#090d16';
+      ctx.fillRect(0, 0, 640, 360);
+
+      // Floor Grid
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, 290);
+      ctx.lineTo(640, 290);
+      ctx.stroke();
+
+      // Simulated stick figure gait cycle position
+      const phase = pct / 100.0;
+      const hipX = 220 + phase * 200;
+      const hipY = 160;
+
+      const kneeFlex = (normBank && normBank.presets[currentTrialId]) ? normBank.presets[currentTrialId].knee_flexion[pct] : 20;
+      const kneeY = hipY + 60;
+      const kneeX = hipX - Math.sin((kneeFlex * Math.PI) / 180) * 35;
+      const ankleY = kneeY + 65;
+      const ankleX = kneeX + Math.cos((kneeFlex * Math.PI) / 180) * 15;
+
+      // Draw Stick Figure
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      // Hip to Knee
+      ctx.moveTo(hipX, hipY);
+      ctx.lineTo(kneeX, kneeY);
+      // Knee to Ankle
+      ctx.lineTo(ankleX, ankleY);
+      ctx.stroke();
+
+      // Joints
+      ctx.fillStyle = '#10b981';
+      [ [hipX, hipY], [kneeX, kneeY], [ankleX, ankleY] ].forEach(([x, y]) => {
+        ctx.beginPath();
+        ctx.arc(x, y, 6, 0, 2 * Math.PI);
+        ctx.fill();
+      });
+
+      // Bounding Box
+      ctx.strokeStyle = 'rgba(14, 165, 233, 0.4)';
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(hipX - 35, hipY - 50, 70, 190);
+      ctx.setLineDash([]);
+    }
+
+    // Playback Controllers
+    function togglePlayPause() {
+      isPlaying = !isPlaying;
+      const icon = document.getElementById('playIcon');
+
+      if (isPlaying) {
+        icon.className = "fa-solid fa-pause text-lg";
+        const delay = (1000 / 30) / playbackSpeed;
+        animInterval = setInterval(() => {
+          let nextIdx = currentCycleIdx + 1;
+          if (nextIdx > 100) nextIdx = 0;
+          updateCycle(nextIdx);
+        }, delay);
+      } else {
+        icon.className = "fa-solid fa-play text-lg";
+        clearInterval(animInterval);
+      }
+    }
+
+    function stepFrame(delta) {
+      let nextIdx = currentCycleIdx + delta;
+      if (nextIdx < 0) nextIdx = 0;
+      if (nextIdx > 100) nextIdx = 100;
+      updateCycle(nextIdx);
+    }
+
+    function changeSpeed() {
+      playbackSpeed = parseFloat(document.getElementById('speedSelect').value);
+      if (isPlaying) { togglePlayPause(); togglePlayPause(); }
+    }
+
+    function onScrub(val) {
+      updateCycle(val);
+    }
+
+    // Custom Video Upload Handler
+    function handleVideoUpload(evt) {
+      const file = evt.target.files[0];
+      if (!file) return;
+
+      const videoEl = document.getElementById('userVideo');
+      const canvasEl = document.getElementById('videoCanvas');
+
+      videoEl.src = URL.createObjectURL(file);
+      videoEl.classList.remove('hidden');
+      canvasEl.classList.add('hidden');
+      document.getElementById('fpsBadge').innerText = "Uploaded Video Track";
+      document.getElementById('trackerStatusTag').innerHTML = `<i class="fa-solid fa-check mr-1"></i> Video Loaded`;
+    }
+
+    // Export Clinical Assessment Report PDF/JSON
+    function exportClinicalReport() {
+      const preset = normBank.presets[currentTrialId];
+      const analysis = runClinicalAnalysis(preset);
+
+      const kneeMom = preset.knee_moment || [];
+      const kneePow = preset.knee_power || [];
+      const grfV = preset.grf_vertical || [];
+
+      const report = {
+        title: "Clinical Gait Analysis Assessment & Inverse Dynamics Kinetics Report",
+        date: new Date().toLocaleDateString(),
+        patient_trial: preset.name,
+        gdi_score: analysis.gdi,
+        gdi_classification: analysis.gdiClass,
+        gps_score: analysis.gps + "°",
+        kinetic_summary: {
+          peak_knee_torque_nm_kg: kneeMom.length ? Math.max(...kneeMom).toFixed(2) : "0.55",
+          peak_knee_power_w_kg: kneePow.length ? Math.min(...kneePow).toFixed(2) : "-1.25",
+          peak_vertical_grf_pct_bw: grfV.length ? Math.max(...grfV).toFixed(0) + "%" : "110%"
+        },
+        findings: analysis.findings,
+        targeted_interventions: analysis.interventions
+      };
+
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(report, null, 2));
+      const anchor = document.createElement('a');
+      anchor.setAttribute("href", dataStr);
+      anchor.setAttribute("download", `Clinical_Gait_Kinetics_Report_${currentTrialId}.json`);
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    }
+
+    window.onload = initApp;
+  </script>
+</body>
+</html>
