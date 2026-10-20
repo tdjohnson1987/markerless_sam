@@ -67,6 +67,14 @@ python comparison_engine.py \
   --vicon-csv results/s11_lunge_01_vicon_angles.csv \
   --subject S11 --trial lunge_01 --camera cam1 \
   --output results/S11/lunge_01/cam1
+
+python -m src.comparison_engine \
+  --angles data/s9_lunge_cam2_joint_angles.csv \
+  --allow-legacy-embedded-reference \
+  --subject S9 \
+  --trial lunge_01 \
+  --camera cam2 \
+  --output results/S9/lunge_01/cam2
 ```
 
 Required SAM input columns: `time_ms`, and any of `r_hip_flex_geo`, `r_knee_flex_geo`, `r_ankle_flex_geo`, `_euler` variants; legacy `_smooth` variants are recognized for exploratory comparison. Required Vicon CSV: `time_ms` and one or more `vicon_hip_flex`, `vicon_knee_flex`, `vicon_ankle_flex` columns. The Vicon angle definition and video/Vicon clock origins must be checked separately. The sync module returns a candidate shift with `status=review`; do not interpret it as an automatic pass.
