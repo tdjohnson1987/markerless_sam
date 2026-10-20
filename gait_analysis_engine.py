@@ -195,7 +195,7 @@ def evaluate_clinical_interventions(patient_curves, spatiotemporal, norm_data):
             "Active dorsiflexion resisted strengthening (Tibialis Anterior)"
         ])
         interventions["orthotics_bracing"].append(
-            "Rigid AFO with 90° neutral ankle positioning or serial stretch casting"
+            "Rigid AFO with 90° neutral ankle positioning"
         )
         interventions["biofeedback_retraining"].append(
             "Ground reaction pressure sensor biofeedback for initial heel strike"
