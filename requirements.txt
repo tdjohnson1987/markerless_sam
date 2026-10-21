@@ -1,0 +1,9 @@
+numpy
+pandas
+scipy
+matplotlib
+ezc3d
+c3d
+jupyterlab
+ipykernel
+pytest 
