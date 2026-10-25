@@ -1,145 +1,244 @@
-"""Reproducible SAM-vs-Vicon angle comparison with externally determined sync.
+"""SAM–Vicon angle validation, with independent synchronization and optional diagnostics.
 
-No knee/hip/ankle based timing optimization, no fictitious kinetics.
-Run `python comparison_engine_v2.py --help` for CLI options.
+Run: python -m src.comparison_engine --help
+
+A diagnostic timing shift is never applied to the primary aligned angles, and
+metrics calculated after a diagnostic shift are clearly labelled exploratory.
 """
 from __future__ import annotations
+
 import argparse
 import json
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
-JOINTS=('hip','knee','ankle')
-METHODS=('geo','euler','smooth')  # 'smooth' supports older dashboard CSVs; convention must be verified
+JOINTS = ("hip", "knee", "ankle")
+METHODS = ("geo", "euler", "smooth")
+SIDES = {"right": "r", "left": "l"}
 
 
 def _load_sync(path):
-    data=json.loads(Path(path).read_text())
-    if not np.isfinite(float(data['shift_ms'])):
-        raise ValueError('Non-finite shift_ms')
+    data = json.loads(Path(path).read_text())
+    if not np.isfinite(float(data["shift_ms"])):
+        raise ValueError("Non-finite shift_ms")
     return data
 
 
-def _time_clean(df, name):
-    t=pd.to_numeric(df[name],errors='coerce').to_numpy(dtype=float)
-    if not np.all(np.isfinite(t)) or np.any(np.diff(t)<=0):
-        raise ValueError(f'{name} must be finite and strictly increasing')
+def _time_clean(df, column):
+    t = pd.to_numeric(df[column], errors="coerce").to_numpy(dtype=float)
+    if len(t) < 2 or not np.all(np.isfinite(t)) or np.any(np.diff(t) <= 0):
+        raise ValueError(f"{column} must contain at least two finite, increasing timestamps")
     return t
 
 
-def _interpolate_reference(vicon, t_target, joint):
-    key=f'vicon_{joint}_flex'
-    if key not in vicon: return np.full(len(t_target),np.nan)
-    x=pd.to_numeric(vicon[key],errors='coerce').to_numpy(float)
-    t=_time_clean(vicon,'time_ms')
-    good=np.isfinite(x)
-    if good.sum()<2:return np.full(len(t_target),np.nan)
-    return np.interp(t_target,t[good],x[good],left=np.nan,right=np.nan)
+def _reference_column(df, joint, side):
+    explicit = f"{side}_vicon_{joint}_flex"
+    legacy = f"vicon_{joint}_flex"
+    if explicit in df:
+        return explicit
+    if side == "r" and legacy in df:
+        return legacy
+    return None
 
 
-def _metric(v,s,t):
-    ok=np.isfinite(v)&np.isfinite(s)&np.isfinite(t)
-    v,s,t=v[ok],s[ok],t[ok]
-    if len(v)<3:return None
-    diff=s-v
-    cor=float(np.corrcoef(v,s)[0,1]) if np.std(v)>1e-10 and np.std(s)>1e-10 else np.nan
-    return dict(n_samples=int(len(v)), rmse_raw_deg=float(np.sqrt(np.mean(diff**2))),
-                mae_raw_deg=float(np.mean(np.abs(diff))),bias_deg=float(np.mean(diff)),
-                pearson_r=cor,rom_error_deg=float(np.ptp(s)-np.ptp(v)),
-                peak_error_deg=float(np.max(s)-np.max(v)),
-                peak_time_error_ms=float(t[np.argmax(s)]-t[np.argmax(v)]))
+def _interpolate_reference(ref, t_target, column):
+    if column not in ref:
+        return np.full(len(t_target), np.nan)
+    t = _time_clean(ref, "time_ms")
+    x = pd.to_numeric(ref[column], errors="coerce").to_numpy(dtype=float)
+    good = np.isfinite(x)
+    if good.sum() < 2:
+        return np.full(len(t_target), np.nan)
+    return np.interp(t_target, t[good], x[good], left=np.nan, right=np.nan)
+
+
+def _rmse(s, v):
+    return float(np.sqrt(np.mean((s - v) ** 2)))
+
+
+def _metric(v, s, t, *, static_window_ms=None, diagnostic_shift_ms=None):
+    ok = np.isfinite(v) & np.isfinite(s) & np.isfinite(t)
+    v, s, t = v[ok], s[ok], t[ok]
+    if len(v) < 3:
+        return None
+    if np.any(np.diff(t) <= 0):
+        raise ValueError("Aligned timestamps must be increasing")
+    diff = s - v
+    corr = float(np.corrcoef(v, s)[0, 1]) if np.std(v) > 1e-10 and np.std(s) > 1e-10 else np.nan
+    result = dict(
+        n_samples=int(len(v)), rmse_raw_deg=_rmse(s, v),
+        mae_raw_deg=float(np.mean(np.abs(diff))), bias_deg=float(np.mean(diff)),
+        pearson_r=corr, rom_error_deg=float(np.ptp(s) - np.ptp(v)),
+        peak_error_deg=float(np.max(s) - np.max(v)),
+        peak_time_error_ms=float(t[np.argmax(s)] - t[np.argmax(v)]),
+        baseline_offset_deg=np.nan, vicon_baseline_deg=np.nan,
+        sam_baseline_deg=np.nan, rmse_neutral_deg=np.nan,
+        rmse_neutral_same_overlap_deg=np.nan,
+        rmse_neutral_shifted_deg=np.nan,
+        rmse_improvement_pct=np.nan,
+        diagnostic_shift_ms=np.nan, calibration_window_ms=np.nan,
+        n_shift_overlap=0,
+        calibration_status="not_requested", shift_status="not_requested",
+    )
+    if static_window_ms is None:
+        return result
+    if static_window_ms <= 0:
+        raise ValueError("static_window_ms must be positive")
+    static = t <= t[0] + static_window_ms
+    if np.count_nonzero(static) < 3:
+        raise ValueError("At least three valid samples required in the static window")
+    v0, s0 = float(np.median(v[static])), float(np.median(s[static]))
+    vn, sn = v - v0, s - s0
+    result.update(
+        vicon_baseline_deg=v0, sam_baseline_deg=s0,
+        baseline_offset_deg=v0 - s0,
+        rmse_neutral_deg=_rmse(sn, vn),
+        calibration_window_ms=float(static_window_ms),
+        calibration_status="trial_start_assumed_static_exploratory",
+    )
+    if diagnostic_shift_ms is None:
+        return result
+    if not np.isfinite(diagnostic_shift_ms):
+        raise ValueError("diagnostic_shift_ms must be finite")
+    # SAM sample originally at t is displayed at t + shift. Compare at Vicon t
+    # using SAM evaluated at t - shift. Out-of-domain points are excluded.
+    shifted = np.interp(t - diagnostic_shift_ms, t, sn, left=np.nan, right=np.nan)
+    overlap = np.isfinite(shifted)
+    result.update(diagnostic_shift_ms=float(diagnostic_shift_ms),
+                  n_shift_overlap=int(overlap.sum()),
+                  shift_status="diagnostic_joint_derived_not_validated")
+    if overlap.sum() >= 3:
+        before = _rmse(sn[overlap], vn[overlap])
+        after = _rmse(shifted[overlap], vn[overlap])
+        result.update(rmse_neutral_same_overlap_deg=before,
+                      rmse_neutral_shifted_deg=after,
+                      rmse_improvement_pct=100 * (before-after)/before if before > 0 else np.nan)
+    return result
 
 
 def compare_angles(angle_csv, output_dir, *, sync_json=None, vicon_csv=None,
-                   subject='unknown',trial='unknown',camera='unknown',
-                   allow_legacy_embedded_reference=False, plot=True):
-    """Compare already-synchronized SAM angles OR raw SAM angles with a sync JSON.
+                   subject="unknown", trial="unknown", camera="unknown",
+                   side="right", allow_legacy_embedded_reference=False,
+                   static_window_ms=None, diagnostic_shift_ms=None, plot=True):
+    """Compare SAM angles to Vicon; optionally report *exploratory* calibration/shift metrics.
 
-    - RAW input must have `time_ms` (video clock); sync_json required.
-    - ALIGNED input has `time_ms_aligned`; cannot apply sync again.
-    - Independent reference CSV should contain `time_ms` (Vicon clock) and
-      vicon_{hip,knee,ankle}_flex columns. No joint-based shifting is done.
-    - Legacy pre-aligned joint CSV can be used with explicit opt-in, but cannot
-      prove sync independence and must be treated as exploratory.
+    Raw SAM CSV: video `time_ms` plus reviewed sync_json and independent vicon_csv.
+    Legacy CSV: pre-existing `time_ms_aligned` and embedded Vicon, requires opt-in.
+    The diagnostic shift never changes the original timestamps or primary RMSE.
     """
-    out=Path(output_dir);out.mkdir(parents=True,exist_ok=True)
-    df=pd.read_csv(angle_csv)
-    if len(df)==0:raise ValueError('Empty angle CSV')
-    already='time_ms_aligned' in df
+    if side not in SIDES:
+        raise ValueError("side must be 'right' or 'left'")
+    if diagnostic_shift_ms is not None and static_window_ms is None:
+        raise ValueError("diagnostic_shift_ms requires static_window_ms")
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(angle_csv)
+    if df.empty:
+        raise ValueError("Empty angle CSV")
+    already = "time_ms_aligned" in df
     if already:
         if sync_json is not None:
-            raise ValueError('Input already has time_ms_aligned. Do not apply a second synchronization.')
-        t=_time_clean(df,'time_ms_aligned')
-        sync={'method':'prealigned_upstream','shift_ms':None,'status':'not_verified_here'}
+            raise ValueError("Already aligned: do not apply a second synchronization")
+        t = _time_clean(df, "time_ms_aligned")
+        sync = {"method": "prealigned_upstream", "shift_ms": None,
+                "status": "not_verified_here"}
     else:
-        if 'time_ms' not in df or sync_json is None:
-            raise ValueError('Unaligned SAM CSV needs raw time_ms plus --sync-json')
-        sync=_load_sync(sync_json)
-        t=_time_clean(df,'time_ms')+float(sync['shift_ms'])
-        df['time_ms_aligned']=t
-    if vicon_csv:
-        vicon=pd.read_csv(vicon_csv)
+        if "time_ms" not in df or sync_json is None:
+            raise ValueError("Raw SAM CSV needs time_ms and --sync-json")
+        sync = _load_sync(sync_json)
+        t = _time_clean(df, "time_ms") + float(sync["shift_ms"])
+        df["time_ms_aligned"] = t
+    prefix = SIDES[side]
+    if vicon_csv is not None:
+        vicon = pd.read_csv(vicon_csv)
         for joint in JOINTS:
-            df[f'vicon_{joint}_flex']=_interpolate_reference(vicon,t,joint)
-        reference_origin='independent_vicon_csv'
+            explicit = f"{prefix}_vicon_{joint}_flex"
+            legacy = f"vicon_{joint}_flex"
+            source_col = explicit if explicit in vicon else legacy if side == "right" and legacy in vicon else None
+            if source_col is not None:
+                df[explicit] = _interpolate_reference(vicon, t, source_col)
+        reference_origin = "independent_vicon_csv"
     else:
-        if not allow_legacy_embedded_reference:
-            raise ValueError('Provide --vicon-csv, or explicitly use --allow-legacy-embedded-reference for exploratory already-aligned CSV')
-        if not already: raise ValueError('Legacy embedded Vicon permitted only for pre-aligned CSVs')
-        reference_origin='embedded_preinterpolated_vicon_unverified'
-    rows=[]
+        if not allow_legacy_embedded_reference or not already:
+            raise ValueError("Provide --vicon-csv or opt into pre-aligned embedded Vicon legacy mode")
+        reference_origin = "embedded_preinterpolated_vicon_unverified"
+    rows = []
     for joint in JOINTS:
-        vcol=f'vicon_{joint}_flex'
-        if vcol not in df:continue
-        v=pd.to_numeric(df[vcol],errors='coerce').to_numpy(float)
+        vcol = _reference_column(df, joint, prefix)
+        if vcol is None:
+            continue
+        v = pd.to_numeric(df[vcol], errors="coerce").to_numpy(dtype=float)
         for method in METHODS:
-            col=f'r_{joint}_flex_{method}'
-            if col not in df:continue
-            s=pd.to_numeric(df[col],errors='coerce').to_numpy(float)
-            m=_metric(v,s,t)
+            col = f"{prefix}_{joint}_flex_{method}"
+            if col not in df:
+                continue
+            s = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+            m = _metric(v, s, t, static_window_ms=static_window_ms,
+                        diagnostic_shift_ms=diagnostic_shift_ms)
             if m is not None:
-                rows.append(dict(subject=subject,trial=trial,camera=camera,joint=joint,
-                                 method=method,reference_origin=reference_origin,
-                                 sync_method=sync.get('method'),sync_shift_ms=sync.get('shift_ms'),**m))
-    if not rows:raise ValueError('No comparable joint/method columns with ≥3 valid overlapping samples')
-    metrics=pd.DataFrame(rows)
-    angles_path=out/'aligned_angles.csv';metrics_path=out/'validation_metrics.csv'
-    df.to_csv(angles_path,index=False);metrics.to_csv(metrics_path,index=False)
-    summary={'subject':subject,'trial':trial,'camera':camera,'sync':sync,
-             'reference_origin':reference_origin,'metrics':json.loads(metrics.to_json(orient='records'))}
-    (out/'validation_summary.json').write_text(json.dumps(summary,indent=2,allow_nan=False))
+                rows.append(dict(subject=subject, trial=trial, camera=camera,
+                                 side=side, joint=joint, method=method,
+                                 reference_origin=reference_origin,
+                                 sync_method=sync.get("method"),
+                                 sync_shift_ms=sync.get("shift_ms"), **m))
+    if not rows:
+        raise ValueError("No comparable joint/method columns with >=3 samples")
+    metrics = pd.DataFrame(rows)
+    df.to_csv(out / "aligned_angles.csv", index=False)
+    metrics.to_csv(out / "validation_metrics.csv", index=False)
+    summary = {"subject": subject, "trial": trial, "camera": camera,
+               "side": side, "sync": sync, "reference_origin": reference_origin,
+               "metrics": json.loads(metrics.to_json(orient="records"))}
+    (out / "validation_summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False))
     if plot:
         import matplotlib.pyplot as plt
-        fig,axes=plt.subplots(3,1,figsize=(11,9),sharex=True)
-        for ax,joint in zip(axes,JOINTS):
-            vcol=f'vicon_{joint}_flex'
-            if vcol in df:ax.plot(t/1000,df[vcol],label='Vicon',lw=2.2,c='black')
+        fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+        for ax, joint in zip(axes, JOINTS):
+            vcol = _reference_column(df, joint, prefix)
+            if vcol is not None:
+                ax.plot(t/1000, df[vcol], label="Vicon", lw=2.2, color="black")
             for method in METHODS:
-                c=f'r_{joint}_flex_{method}'
-                if c in df:ax.plot(t/1000,df[c],label=f'SAM {method}',alpha=.85)
-            ax.set_ylabel(joint.capitalize()+' (deg)');ax.grid(alpha=.2);ax.legend(loc='best')
-        axes[-1].set_xlabel('Vicon-clock time (s)')
-        fig.suptitle(f'{subject} / {trial} / {camera} – {reference_origin}')
-        fig.tight_layout();fig.savefig(out/'angle_comparison.png',dpi=160);plt.close(fig)
+                col = f"{prefix}_{joint}_flex_{method}"
+                if col in df:
+                    ax.plot(t/1000, df[col], label=f"SAM {method}", alpha=.85)
+            ax.set_ylabel(f"{side.capitalize()} {joint} (deg)")
+            ax.grid(alpha=.2)
+            if ax.lines:
+                ax.legend()
+        axes[-1].set_xlabel("Vicon-clock time (s)")
+        fig.suptitle(f"{subject} / {trial} / {camera} — {reference_origin}")
+        fig.tight_layout()
+        fig.savefig(out / "angle_comparison.png", dpi=160)
+        plt.close(fig)
     return metrics
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--angles',required=True)
-    p.add_argument('--output',required=True)
-    p.add_argument('--sync-json',default=None)
-    p.add_argument('--vicon-csv',default=None)
-    p.add_argument('--subject',default='unknown')
-    p.add_argument('--trial',default='unknown')
-    p.add_argument('--camera',default='unknown')
-    p.add_argument('--allow-legacy-embedded-reference',action='store_true')
-    args=p.parse_args()
-    res=compare_angles(args.angles,args.output,sync_json=args.sync_json,vicon_csv=args.vicon_csv,
-                       subject=args.subject,trial=args.trial,camera=args.camera,
-                       allow_legacy_embedded_reference=args.allow_legacy_embedded_reference)
-    print(res[['joint','method','n_samples','rmse_raw_deg','bias_deg','pearson_r']].to_string(index=False))
-    print(f'Outputs saved to {args.output}')
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--angles", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--sync-json")
+    p.add_argument("--vicon-csv")
+    p.add_argument("--subject", default="unknown")
+    p.add_argument("--trial", default="unknown")
+    p.add_argument("--camera", default="unknown")
+    p.add_argument("--side", choices=SIDES, default="right")
+    p.add_argument("--allow-legacy-embedded-reference", action="store_true")
+    p.add_argument("--static-window-ms", type=float)
+    p.add_argument("--diagnostic-shift-ms", type=float)
+    args = p.parse_args()
+    res = compare_angles(args.angles, args.output, sync_json=args.sync_json,
+                         vicon_csv=args.vicon_csv, subject=args.subject,
+                         trial=args.trial, camera=args.camera, side=args.side,
+                         allow_legacy_embedded_reference=args.allow_legacy_embedded_reference,
+                         static_window_ms=args.static_window_ms,
+                         diagnostic_shift_ms=args.diagnostic_shift_ms)
+    print(res[["side", "joint", "method", "rmse_raw_deg", "rmse_neutral_deg",
+               "rmse_neutral_shifted_deg"]].to_string(index=False))
+    print(f"Outputs saved to {args.output}")
 
-if __name__=='__main__':main()
+
+if __name__ == "__main__":
+    main()

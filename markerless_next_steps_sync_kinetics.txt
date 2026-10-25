@@ -1,0 +1,56 @@
+MARKERLESS SAM / VICON — NEXT SESSION PLAN
+Prepared: 2026-10-24
+Project: markerless_sam | Lunge validation -> kinetics
+
+GOAL
+Establish independent per-camera video-to-Vicon synchronization; produce genuinely bilateral kinematics; then build measured-force kinetics ground truth before estimating kinetics from SAM.
+
+SESSION 1 — INDEPENDENT SYNCHRONIZATION (HIGHEST PRIORITY)
+[ ] 1. Confirm a matching subject/trial pair for video and Vicon, e.g. S11 / lunge_01. Identify cam0, cam1, cam2 filenames and verify correct C3D (avoid S9/S11 path mix-ups).
+[ ] 2. On the server export video_sync.csv for each camera: original frame index, original video timestamp in milliseconds, arm_raise. Use same arm/event and body-relative, normalized elevation definition as Vicon; preserve frame PTS where possible. Record fps, timebase, any frame skipping, method and missing detections.
+[ ] 3. Locally export vicon_sync.csv from the matching C3D: time_ms, arm_raise. Select documented arm/trunk/pelvis markers; normalize to torso length; preserve real C3D sampling rate and frame origin. Do NOT use hip/knee waveform matching to establish synchronization.
+[ ] 4. Inspect plots of both unaligned sync signals over their full lengths. Select the SAME physical event for each recording; avoid assuming it lies in the first 4 seconds. Check signal polarity/units and event identity.
+[ ] 5. Run src.synchronization.synchronize() separately for cam0, cam1, cam2; save a distinct results/{subject}/{trial}/{camera}/sync.json and sync.png. Store method, event timestamps, shift_ms, manual review status, source filenames and timebase metadata.
+[ ] 6. Verify a second event (if present) to distinguish constant start-time offset from clock drift. If mismatch grows with time, audit video PTS, dropped/skipped frames, and Vicon rate before considering a linear clock mapping.
+[ ] 7. Re-export SAM-only raw joint angles with ORIGINAL video time_ms. Export Vicon reference angles separately with Vicon time_ms. Do not apply a second shift to old *_joint_angles.csv files containing time_ms_aligned and embedded Vicon columns.
+[ ] 8. Run src.comparison_engine with raw SAM CSV + independently reviewed sync.json + standalone Vicon CSV. Retain the legacy embedded-reference results as exploratory comparisons only.
+[ ] 9. Check before/after overlays and peak timing for right hip/knee; preserve original raw and neutral-referenced error metrics. Diagnostic +333 ms belongs in exploratory notes only, not primary validation.
+
+SYNC DELIVERABLES
+- Per-camera video_sync.csv and sync.json/sync.png
+- One vicon_sync.csv per matching Vicon trial
+- Traceable provenance: subject, trial, camera, side, original filename, timestamp units/origin, model commit, frame stride
+- Independently aligned SAM-only and Vicon-only angle CSVs
+- Clear pass/review/fail notes for event matching and possible drift
+
+SESSION 2 — BILATERAL KINEMATICS AND COMPARISON
+[ ] 1. Replace hard-coded right-only calculations with side='left'/'right' and real left-leg marker/keypoint extraction. Never copy right data into left columns or fill missing channels with zeros.
+[ ] 2. Define and document comparable hip/knee/ankle anatomical planes, sign conventions, axes and reference positions. Address the Vicon shoulder-ASIS-knee proxy and its apparent ~-20 deg quiet-stance hip offset.
+[ ] 3. Distinguish raw angles, filtered angles, and neutral-referenced/calibrated angles. Use an independently identified static pose; report calibration provenance.
+[ ] 4. Update plots to six panels (left and right hip/knee/ankle), optionally across cam0/cam1/cam2, plus error curves and per-side metrics. Note which foot is forward/back in each lunge.
+[ ] 5. Write tests for bilateral data integrity, angle sign, time interpolation, missing markers and duplicate-side prevention.
+
+SESSION 3 — KINETICS: GROUND TRUTH FIRST
+[ ] 1. Inspect raw C3D force-plate data using ezc3d. Record point sampling rate, analog sampling rate, force plate metadata, units, calibration matrix, axes, corners and origins.
+[ ] 2. Recover per-plate 3D GRF, center of pressure (CoP), and free moment, with correct point-vs-analog timestamps. Check platform calibration and validate vertical force sign.
+[ ] 3. Identify left/right foot contacts on each plate; inspect double-support and transfers in lunges. Force plate outputs are only foot-specific if plate contacts allow attribution.
+[ ] 4. Plot measured Fz in Newtons and body-weight-normalized units, Fx/Fy, CoP paths, contact periods and impulses. Check sum Fz near body weight in static standing.
+[ ] 5. Establish a Vicon+force-plate reference inverse-dynamics pipeline (OpenSim or Nimble) on ONE trial, with a validated biomechanical model, estimated subject segment parameters and independent measured external forces.
+[ ] 6. Separately calculate COM displacement/velocity/acceleration from calibrated SAM 3D body data. Validate scale, root translation, ground plane and sampling; avoid acceleration from every-5th-frame inference if too sparse/noisy.
+[ ] 7. Benchmark TOTAL vertical GRF via m*(a_COM,z + g) against measured sum of plates. This is a whole-body equation, not a method for distributing forces between feet in double support.
+[ ] 8. Only then explore foot-contact-aware force distribution and inverse dynamics driven by SAM kinematics and estimated forces; test with held-out trials/subjects to prevent leakage.
+
+TOOLS / METHODS DECISION
+- Python + ezc3d + NumPy/SciPy: first choice for force-plate QC, CoP/GRF extraction, COM tests, and simple transparent baselines.
+- OpenSim: strongest practical first reference for established musculoskeletal inverse dynamics if the model and external loads can be set up correctly.
+- Nimble Physics: compelling later alternative for human skeleton inverse dynamics, multiple contacts and differentiable optimization; requires model-coordinate fitting, compatible skeleton, external load conventions and testing; beta API.
+- AddBiomechanics: Nimble-powered automated mocap workflow, but uploaded data become public; DO NOT upload participant data without appropriate permission and ethics/data-governance clearance. Do not use force-optimized motion for independent force-prediction validation.
+- In ALL cases, scientifically valid inverse dynamics depends on accurate kinematics, segment inertial parameters, reference frames, external forces/CoP, and synchronization. Solver choice does not correct unreliable input data.
+
+RESEARCH DESIGN: TWO SEPARATE QUESTIONS
+A. Can markerless SAM estimate kinematics accurately versus a marker-based reference?
+B. Can SAM + a force estimation approach recover external forces and joint kinetics when force plates are not available?
+Use measured-force inputs for a controlled 'kinematics-only' inverse-dynamics comparison first, then estimated forces for a more realistic end-to-end experiment. Keep these conditions and metrics separate.
+
+RECOMMENDED IMMEDIATE ACTION
+Start next session with the matching video/Vicon arm synchronization exports and run notebook 01. Do not begin adding synthetic joint torques or tuning kinetics against the same evaluation trial.
