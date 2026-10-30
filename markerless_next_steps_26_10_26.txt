@@ -1,0 +1,60 @@
+MARKERLESS SAM / VICON — NEXT SESSIONS PLAN
+Updated: 2026-10-26
+Project: Creating a Markerless 3D Kinematic and Kinetic Pipeline for Functional Fitness
+
+GOAL
+Establish independently synchronized SAM–Vicon kinematic validation for S9 (cam0 and cam1 first), then extract measured Vicon force-plate data and begin physics-based kinetics. Complete remaining subject inference in parallel.
+
+PRIORITY 1 — FINISH S9 INDEPENDENT SYNCHRONIZATION AND KINEMATICS
+[ ] Review sync_candidate.png and sync_candidate.json separately for S9 cam0 and cam1.
+[ ] Confirm both align the same physical arm-raise event with the original S9 Vicon recording, and use a second movement as a timing sanity check where possible.
+[ ] Record accepted per-camera shifts and provenance in reviewed sync.json; retain candidates separately. Do not reuse one camera's shift for another.
+[ ] Keep cam2 excluded from primary validation until its event identification/tracking is reliable; document the reason.
+[ ] On the server, export SAM-only joint angles for each camera with ORIGINAL video-relative time_ms (not time_ms_aligned), and retain method labels such as r_hip_flex_geo/euler, etc. The curves may be smoothed, so document smoothing.
+[ ] Download these angle CSVs into the local lunge_sam_out folder. Preserve any raw NPZ/full 3D keypoint and rotation outputs where available.
+[ ] Independently export the Vicon reference-angle CSV from the matching C3D using its native clock: time_ms and hip/knee/ankle references. First reproduce the server notebook's angle definitions, then improve the anatomical definitions as a separate experiment.
+[ ] Run src.comparison_engine with each camera's reviewed sync.json AND the separate Vicon angle CSV. Apply the synchronization offset only once.
+[ ] Create neutral-referenced results only from a verified static interval (or static trial). Keep raw and calibrated metrics separately; omit joint-derived diagnostic_shift_ms from primary validation.
+[ ] Review hip/knee/ankle overlays and export validation_metrics.csv; compare cam0 and cam1. Verify subject, trial, camera, side, frame rates, and recording coverage.
+
+PRIORITY 2 — FINISH REMAINING SAM INFERENCE
+[ ] For EVERY subject and camera, export both camera-specific SAM arm synchronization files (s{subject}_lunge_cam{camera}_sam_sync.csv) and SAM-only angle files with raw video timestamps.
+[ ] Save original frame indices, inference stride, video FPS / frame presentation timestamps where possible, model identifier, sample count, and missing detections. Keep videos, C3D and large outputs outside Git.
+[ ] Confirm corresponding Vicon C3D trial IDs and copy required C3D files locally.
+[ ] Batch synchronization per camera and aggregate validation metrics across subject/trial/camera/side. Exclude failed or unreviewed alignments from primary summary statistics.
+
+PRIORITY 3 — BILATERAL KINEMATICS
+[ ] Extend SAM geometric kinematics from right to left using real left-side keypoints, not copied right-side measurements.
+[ ] Correct src/vicon_parser.py: independently calculate true left/right references; remove placeholder, zero-filled or duplicated contralateral values.
+[ ] Define signed hip flexion and consistent knee/ankle conventions. Document whether the lunge's analyzed leg is front or rear.
+[ ] Update comparison/plotting for 6-panel bilateral hip/knee/ankle plots and per-side metrics.
+
+PRIORITY 4 — BEGIN KINETICS USING MEASURED VICON FORCE PLATES
+[ ] In notebooks/03_kinetics.ipynb, read S9 matching C3D with ezc3d (extract_forceplat_data=True).
+[ ] Inspect force-platform count, channels, calibration, coordinate systems, origin, units, analog sample rate, and synchronization with marker frames.
+[ ] Plot measured 3D GRF and CoP versus native Vicon time; verify zero-force baseline, vertical sign, body-weight scale, and foot-to-plate assignment/contact periods.
+[ ] Map measured forces onto each camera's independently aligned SAM clock using original acquisition times and interpolation WITHOUT changing the measured force data.
+[ ] Establish physical SAM scale, ground plane, body mass and a defensible segment-weighted whole-body COM trajectory. Assess position noise, filtering and acceleration sensitivity; every-fifth-frame inference (~12 Hz for 60 FPS input) may limit second derivatives.
+[ ] Prototype TOTAL vertical GRF: Fz = m * (a_COM,z + g), when vertical is upward and other vertical external forces are negligible. Compare to summed measured force-plate Fz, using common overlap only.
+[ ] Report force RMSE, peak error, impulse error, correlations and event/contact timing. Total COM-based force alone cannot determine left/right forces during double support.
+[ ] After force and kinematic validity checks, test a consistent inverse-dynamics model. OpenSim is a strong reference; Nimble Physics is a research alternative, but both require fitting an articulated model and reliable external force/contact information.
+[ ] Keep measured-GRF+SAM-kinematics and estimated-GRF+SAM-kinematics experiments separate to isolate sources of error.
+
+REPOSITORY WORKFLOW / KEY FILES
+- notebooks/01_synchronisation.ipynb: generate Vicon arm signals from C3D once per trial; batch camera candidates and review event alignment.
+- src/synchronization.py: calculate video-to-Vicon event shift per camera. Candidate results are not approved automatically.
+- notebooks/02_kinematics.ipynb and src/kinematics.py: independently reconstruct SAM angles, eventually bilateral.
+- notebooks/04_validation.ipynb and src/comparison_engine.py: apply reviewed shift to raw SAM timestamps; compare against independent Vicon reference CSV; compute validation metrics.
+- notebooks/03_kinetics.ipynb: inspect Vicon force platforms, then develop/validate estimates.
+- lunge_sam_out/: local data only (gitignored); results/: generated figures and metrics (gitignored).
+
+ESSENTIAL WARNINGS
+- Do not apply sync.json to SAM angle CSVs already containing time_ms_aligned.
+- Do not infer validated timing offsets by optimizing lunge joint-angle correlations.
+- Do not assume the three phones started at the same time; each camera needs its own event-based offset.
+- Do not mistake an apparent neutral offset for a timing error; compare signed angle definitions before interpreting accuracy.
+- The current Vicon parser may duplicate right-leg values into left-leg columns; fix before bilateral reporting.
+- A clean synchronization overlay is promising, not proof of accurate synchronization across the entire recording.
+
+FIRST ACTION NEXT SESSION
+Open 01_synchronisation.ipynb; review S9 cam0/cam1 sync candidates, confirm event and timing sanity, then export S9 original-time SAM angle CSVs and native-time Vicon angles for independent local validation. Begin S1/S2/S6/S8 inference as server resources allow.

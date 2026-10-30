@@ -62,6 +62,8 @@ def load_vicon_c3d(c3d_path: str) -> Tuple[pd.DataFrame, float, Dict[str, np.nda
     r_hip_t = r_hip.T
     r_knee_t = r_knee.T
     r_ankle_t = r_ankle.T
+    l_knee_t = l_knee.T
+    l_ankle_t = l_ankle.T
 
     # 2. Build Anatomical Pelvic Frame (Forward, Up, Left)
     mid_hip = (l_hip_t + r_hip_t) / 2.0
@@ -109,22 +111,26 @@ def load_vicon_c3d(c3d_path: str) -> Tuple[pd.DataFrame, float, Dict[str, np.nda
             is_flexion = np.sum(v2_raw * fwd, axis=0) > 0
             return np.where(is_flexion, 180.0 - abs_angle, -(180.0 - abs_angle))
 
-    vicon_knee_flex = calc_vicon_angle(r_hip_t, r_knee_t, r_ankle_t, 'knee')
-    vicon_hip_flex = calc_vicon_angle(r_sh_t, r_hip_t, r_knee_t, 'hip')
+    vicon_knee_flex_r = calc_vicon_angle(r_hip_t, r_knee_t, r_ankle_t, 'knee')
+    vicon_hip_flex_r = calc_vicon_angle(r_sh_t, r_hip_t, r_knee_t, 'hip')
+    vicon_knee_flex_l = calc_vicon_angle(l_hip_t, l_knee_t, l_ankle_t, 'knee')
+    vicon_hip_flex_l = calc_vicon_angle(l_sh_t, l_hip_t, l_knee_t, 'hip')
+    vicon_ankle_df_r = calc_vicon_angle(r_knee_t, r_ankle_t, r_ankle_t + np.array([[0], [0], [-1]]), 'ankle')
+    vicon_ankle_df_l = calc_vicon_angle(l_knee_t, l_ankle_t, l_ankle_t + np.array([[0], [0], [-1]]), 'ankle')
 
-    time_points = np.arange(num_frames) / frame_rate
+    time_points = np.arange(num_frames) / frame_rate # time in seconds
 
     df = pd.DataFrame({
         'time': time_points,
         'ts': (time_points * 1000.0).astype(int),
-        'r_knee_flex': vicon_knee_flex,
-        'l_knee_flex': vicon_knee_flex,
-        'r_hip_flex': vicon_hip_flex,
-        'l_hip_flex': vicon_hip_flex,
-        'r_hip_abd': np.zeros(num_frames),
-        'r_knee_valgus': np.zeros(num_frames),
-        'r_ankle_df': np.zeros(num_frames),
-        'l_ankle_df': np.zeros(num_frames)
+        'r_knee_flex': vicon_knee_flex_r,
+        'l_knee_flex': vicon_knee_flex_l,
+        'r_hip_flex': vicon_hip_flex_r,
+        'l_hip_flex': vicon_hip_flex_l,
+        'r_hip_abd': np.zeros(num_frames), 
+        'r_knee_valgus': np.zeros(num_frames), #
+        'r_ankle_df': vicon_ankle_df_r,
+        'l_ankle_df': vicon_ankle_df_l 
     })
 
     return df, frame_rate, markers
