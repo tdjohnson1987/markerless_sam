@@ -118,16 +118,20 @@ def _metric(v, s, t, *, static_window_ms=None, diagnostic_shift_ms=None):
     return result
 
 
-def compare_angles(angle_csv, output_dir, *, sync_json=None, vicon_csv=None,
+def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, vicon_csv=None, vicon_c3d=None,
                    subject="unknown", trial="unknown", camera="unknown",
                    side="right", allow_legacy_embedded_reference=False,
-                   static_window_ms=None, diagnostic_shift_ms=None, plot=True):
+                   static_window_ms=None, diagnostic_shift_ms=None, plot=True,
+                   original_time_confirmed=False):
     """Compare SAM angles to Vicon; optionally report *exploratory* calibration/shift metrics.
 
-    Raw SAM CSV: video `time_ms` plus reviewed sync_json and independent vicon_csv.
+    Raw SAM CSV: video `time_ms` plus reviewed sync_json and independent Vicon.
+    Legacy recovery: verified per-row `sam_sync_csv` timestamps, explicitly acknowledged.
     Legacy CSV: pre-existing `time_ms_aligned` and embedded Vicon, requires opt-in.
     The diagnostic shift never changes the original timestamps or primary RMSE.
     """
+    if vicon_csv is not None and vicon_c3d is not None:
+        raise ValueError("Supply either vicon_csv or vicon_c3d, not both")
     if side not in SIDES:
         raise ValueError("side must be 'right' or 'left'")
     if diagnostic_shift_ms is not None and static_window_ms is None:
@@ -138,28 +142,93 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, vicon_csv=None,
     if df.empty:
         raise ValueError("Empty angle CSV")
     already = "time_ms_aligned" in df
-    if already:
-        if sync_json is not None:
-            raise ValueError("Already aligned: do not apply a second synchronization")
+    if sam_sync_csv is not None:
+        if sync_json is None:
+            raise ValueError("--sam-sync-csv requires --sync-json")
+        if not original_time_confirmed:
+            raise ValueError(
+                "Legacy time recovery needs confirmation that the SAM angle values "
+                "remain in their original frame order and were not resampled. "
+                "After checking export provenance, pass --original-time-confirmed."
+            )
+        sam_sync = pd.read_csv(sam_sync_csv)
+        video_t = _time_clean(sam_sync, "ts")
+        if len(video_t) != len(df):
+            raise ValueError(
+                f"SAM sync/angles row count differs: {len(video_t)} vs {len(df)}; "
+                "do not match rows by index"
+            )
+        if not already:
+            raise ValueError("Legacy time recovery expects time_ms_aligned for shift verification")
+        legacy_t = _time_clean(df, "time_ms_aligned")
+        differences = legacy_t - video_t
+        legacy_shift = float(np.median(differences))
+        max_deviation = float(np.max(np.abs(differences - legacy_shift)))
+        if max_deviation > 1e-3:
+            raise ValueError(
+                f"Non-constant legacy shift (maximum deviation {max_deviation:.6f} ms); "
+                "cannot establish matching row timestamps"
+            )
+        if "time_ms" in df and not np.allclose(
+            _time_clean(df, "time_ms"), video_t, rtol=0, atol=1e-3
+        ):
+            raise ValueError("Existing time_ms does not match SAM synchronization timestamps")
+        df["time_ms"] = video_t
+        print(f"Recovered video timestamps from {sam_sync_csv}; verified old shift "
+              f"{legacy_shift:+.3f} ms, max deviation {max_deviation:.6g} ms")
+    if sync_json is not None:
+        if "time_ms" not in df:
+            raise ValueError("Independent synchronization requires original time_ms or --sam-sync-csv")
+        if already and not original_time_confirmed:
+            raise ValueError(
+                "CSV contains time_ms_aligned. Confirm time_ms is ORIGINAL VIDEO TIME "
+                "and SAM rows were NOT resampled; then pass --original-time-confirmed."
+            )
+        # Never read the old aligned times or the embedded Vicon reference.
+        t = _time_clean(df, "time_ms") + float(_load_sync(sync_json)["shift_ms"])
+        sync = _load_sync(sync_json)
+        if sync.get("status") not in ("approved", "accepted", "validated"):
+            print(f"WARNING: sync status={sync.get('status', 'missing')} — exploratory results only; manually review event correspondence")
+        df = df.drop(columns=[c for c in df.columns if c == "time_ms_aligned" or c.startswith("vicon_") or "_vicon_" in c])
+        df["time_ms_aligned"] = t
+    elif already:
         t = _time_clean(df, "time_ms_aligned")
         sync = {"method": "prealigned_upstream", "shift_ms": None,
                 "status": "not_verified_here"}
     else:
-        if "time_ms" not in df or sync_json is None:
-            raise ValueError("Raw SAM CSV needs time_ms and --sync-json")
-        sync = _load_sync(sync_json)
-        t = _time_clean(df, "time_ms") + float(sync["shift_ms"])
-        df["time_ms_aligned"] = t
+        raise ValueError("Provide --sync-json and original time_ms for independent validation")
     prefix = SIDES[side]
-    if vicon_csv is not None:
+    if vicon_c3d is not None:
+        from src.vicon_parser import load_vicon_c3d
+        vicon, _, _ = load_vicon_c3d(str(vicon_c3d))
+        # Accept both current parser's field names and proposed validation names.
+        if "time_ms" not in vicon:
+            if "ts" in vicon:
+                vicon["time_ms"] = pd.to_numeric(vicon["ts"], errors="raise")
+            elif "time" in vicon:
+                vicon["time_ms"] = pd.to_numeric(vicon["time"], errors="raise") * 1000.0
+            else:
+                raise ValueError("Vicon parser must return time_ms, ts, or time")
+        for prefix0 in ("r", "l"):
+            for joint in JOINTS:
+                dst = f"{prefix0}_vicon_{joint}_flex"
+                src = f"{prefix0}_{joint}_flex" if joint != "ankle" else f"{prefix0}_ankle_df"
+                if dst not in vicon and src in vicon:
+                    vicon[dst] = vicon[src]
+        reference_origin = "independent_vicon_c3d"
+    elif vicon_csv is not None:
         vicon = pd.read_csv(vicon_csv)
+        reference_origin = "independent_vicon_csv"
+    else:
+        vicon = None
+
+    if vicon is not None:
         for joint in JOINTS:
             explicit = f"{prefix}_vicon_{joint}_flex"
             legacy = f"vicon_{joint}_flex"
             source_col = explicit if explicit in vicon else legacy if side == "right" and legacy in vicon else None
             if source_col is not None:
                 df[explicit] = _interpolate_reference(vicon, t, source_col)
-        reference_origin = "independent_vicon_csv"
     else:
         if not allow_legacy_embedded_reference or not already:
             raise ValueError("Provide --vicon-csv or opt into pre-aligned embedded Vicon legacy mode")
@@ -198,11 +267,13 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, vicon_csv=None,
         for ax, joint in zip(axes, JOINTS):
             vcol = _reference_column(df, joint, prefix)
             if vcol is not None:
-                ax.plot(t/1000, df[vcol], label="Vicon", lw=2.2, color="black")
+                ax.plot(t/1000, df[vcol], label="Vicon", lw=2.2,
+                        color={"right": "#24985A", "left": "#D94848"}[side], linestyle="--")
             for method in METHODS:
                 col = f"{prefix}_{joint}_flex_{method}"
                 if col in df:
-                    ax.plot(t/1000, df[col], label=f"SAM {method}", alpha=.85)
+                    ax.plot(t/1000, df[col], label=f"SAM {method}", alpha=.85,
+                            color={"right": "#24985A", "left": "#D94848"}[side])
             ax.set_ylabel(f"{side.capitalize()} {joint} (deg)")
             ax.grid(alpha=.2)
             if ax.lines:
@@ -220,7 +291,11 @@ def main():
     p.add_argument("--angles", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--sync-json")
+    p.add_argument("--sam-sync-csv", help="Original video ts from corresponding SAM synchronization CSV; verifies constant legacy offset")
     p.add_argument("--vicon-csv")
+    p.add_argument("--vicon-c3d", help="Use src.vicon_parser directly; no Vicon angle CSV required")
+    p.add_argument("--original-time-confirmed", action="store_true",
+                   help="Permit old exports containing time_ms_aligned ONLY when time_ms is original video time and SAM was not resampled")
     p.add_argument("--subject", default="unknown")
     p.add_argument("--trial", default="unknown")
     p.add_argument("--camera", default="unknown")
@@ -230,7 +305,9 @@ def main():
     p.add_argument("--diagnostic-shift-ms", type=float)
     args = p.parse_args()
     res = compare_angles(args.angles, args.output, sync_json=args.sync_json,
-                         vicon_csv=args.vicon_csv, subject=args.subject,
+                         sam_sync_csv=args.sam_sync_csv,
+                         vicon_csv=args.vicon_csv, vicon_c3d=args.vicon_c3d,
+                         original_time_confirmed=args.original_time_confirmed, subject=args.subject,
                          trial=args.trial, camera=args.camera, side=args.side,
                          allow_legacy_embedded_reference=args.allow_legacy_embedded_reference,
                          static_window_ms=args.static_window_ms,
