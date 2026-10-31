@@ -47,13 +47,19 @@ def load_vicon_c3d(c3d_path: str) -> Tuple[pd.DataFrame, float, Dict[str, np.nda
     # 1. Primary Vicon Anatomical Markers
     l_sh = get_marker('LCLAVLAT', ['LCLAVMID', 'C7', 'STRN'])
     r_sh = get_marker('RCLAVLAT', ['RCLAVMID', 'C7', 'STRN'])
-    l_hip = get_marker('LASI')
     r_hip = get_marker('RASI')
     r_knee = get_marker('RKNE')
     r_ankle = get_marker('RANK')
-    
-    l_knee = markers.get('LKNE', r_knee)
-    l_ankle = markers.get('LANK', r_ankle)
+
+    l_hip = get_marker('LASI')
+    l_knee = get_marker('LKNE') # 
+    l_ankle = get_marker('LANK')
+
+    r_heel = get_marker("RHEEL")
+    r_toe = get_marker("RTOE")
+
+    l_heel = get_marker("LHEEL")
+    l_toe = get_marker("LTOE")
 
     # Convert shape to (3, N_frames) for vector cross products
     l_sh_t = l_sh.T
@@ -62,6 +68,12 @@ def load_vicon_c3d(c3d_path: str) -> Tuple[pd.DataFrame, float, Dict[str, np.nda
     r_hip_t = r_hip.T
     r_knee_t = r_knee.T
     r_ankle_t = r_ankle.T
+    l_knee_t = l_knee.T
+    l_ankle_t = l_ankle.T
+    l_heel_t = l_heel.T
+    l_toe_t = l_toe.T
+    r_heel_t = r_heel.T
+    r_toe_t = r_toe.T
 
     # 2. Build Anatomical Pelvic Frame (Forward, Up, Left)
     mid_hip = (l_hip_t + r_hip_t) / 2.0
@@ -109,22 +121,73 @@ def load_vicon_c3d(c3d_path: str) -> Tuple[pd.DataFrame, float, Dict[str, np.nda
             is_flexion = np.sum(v2_raw * fwd, axis=0) > 0
             return np.where(is_flexion, 180.0 - abs_angle, -(180.0 - abs_angle))
 
-    vicon_knee_flex = calc_vicon_angle(r_hip_t, r_knee_t, r_ankle_t, 'knee')
-    vicon_hip_flex = calc_vicon_angle(r_sh_t, r_hip_t, r_knee_t, 'hip')
+
+    def calc_ankle_df(knee, ankle, heel, toe, fwd, up):
+        """
+        Sagittal-plane shank-foot angle in degrees.
+
+        Positive = dorsiflexion
+        Negative = plantarflexion
+
+        Assumes:
+        - fwd points anteriorly
+        - up points superiorly
+        - arrays have shape (3, N)
+        """
+
+        shank = knee - ankle
+        foot = toe - heel
+
+        shank_f = np.sum(shank * fwd, axis=0)
+        shank_u = np.sum(shank * up, axis=0)
+
+        foot_f = np.sum(foot * fwd, axis=0)
+        foot_u = np.sum(foot * up, axis=0)
+
+        shank_norm = np.hypot(shank_f, shank_u)
+        foot_norm = np.hypot(foot_f, foot_u)
+
+        valid = (
+            np.isfinite(shank_norm)
+            & np.isfinite(foot_norm)
+            & (shank_norm > 1e-8)
+            & (foot_norm > 1e-8)
+        )
+
+        df = np.full(shank_f.shape, np.nan)
+
+        shank_angle = np.arctan2(shank_u[valid], shank_f[valid])
+        foot_angle = np.arctan2(foot_u[valid], foot_f[valid])
+
+        angle = np.degrees(
+            np.pi / 2 - (shank_angle - foot_angle)
+        )
+
+        df[valid] = (angle + 180) % 360 - 180
+
+        return df
+
+    vicon_knee_flex_r = calc_vicon_angle(r_hip_t, r_knee_t, r_ankle_t, 'knee')
+    vicon_hip_flex_r = calc_vicon_angle(r_sh_t, r_hip_t, r_knee_t, 'hip')
+    vicon_knee_flex_l = calc_vicon_angle(l_hip_t, l_knee_t, l_ankle_t, 'knee')
+    vicon_hip_flex_l = calc_vicon_angle(l_sh_t, l_hip_t, l_knee_t, 'hip')
+    vicon_ankle_df_r = calc_ankle_df(r_knee_t, r_ankle_t, r_heel_t, r_toe_t, fwd, up)
+    vicon_ankle_df_l = calc_ankle_df(l_knee_t, l_ankle_t, l_heel_t, l_toe_t, fwd, up)
 
     time_points = np.arange(num_frames) / frame_rate
 
     df = pd.DataFrame({
-        'time': time_points,
-        'ts': (time_points * 1000.0).astype(int),
-        'r_knee_flex': vicon_knee_flex,
-        'l_knee_flex': vicon_knee_flex,
-        'r_hip_flex': vicon_hip_flex,
-        'l_hip_flex': vicon_hip_flex,
-        'r_hip_abd': np.zeros(num_frames),
-        'r_knee_valgus': np.zeros(num_frames),
-        'r_ankle_df': np.zeros(num_frames),
-        'l_ankle_df': np.zeros(num_frames)
+        "time_ms": time_points * 1000.0,
+
+        # Right leg
+        "r_vicon_hip_flex": vicon_hip_flex_r,
+        "r_vicon_knee_flex": vicon_knee_flex_r,
+        "r_vicon_ankle_flex": vicon_ankle_df_r,
+
+        # Left leg
+        "l_vicon_hip_flex": vicon_hip_flex_l,
+        "l_vicon_knee_flex": vicon_knee_flex_l,
+        "l_vicon_ankle_flex": vicon_ankle_df_l,
     })
 
     return df, frame_rate, markers
@@ -133,4 +196,5 @@ def load_vicon_c3d(c3d_path: str) -> Tuple[pd.DataFrame, float, Dict[str, np.nda
 if __name__ == '__main__':
     df, rate, markers = load_vicon_c3d('vicon/lunge/s11_lunge_0_1.c3d')
     print(f"Loaded Vicon SAM 3D anatomical frame file: {len(df)} frames at {rate} Hz")
-    print(df[['time', 'r_knee_flex', 'r_hip_flex']].head())
+    print(df[['time_ms', 'r_vicon_knee_flex', 'r_vicon_hip_flex']].head())
+
