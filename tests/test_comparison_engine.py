@@ -32,6 +32,6 @@ def run():
             compare_angles(d/'out/aligned_angles.csv',d/'double',sync_json=d/'sync.json',vicon_csv=d/'vicon.csv',plot=False)
             raise AssertionError('Double alignment not rejected')
         except ValueError as e:
-            assert 'second synchronization' in str(e)
+            assert 'original-time-confirmed' in str(e)
     print('Comparison engine synthetic tests passed')
 if __name__=='__main__':run()
