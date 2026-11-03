@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import numpy as np
 import pandas as pd
+import pytest
 from src.comparison_engine import compare_angles
 
 def run():
@@ -34,4 +35,57 @@ def run():
         except ValueError as e:
             assert 'original-time-confirmed' in str(e)
     print('Comparison engine synthetic tests passed')
+
+def test_original_time_is_verified_against_sam_sync(tmp_path):
+    time_ms = np.arange(0, 400, 100, dtype=float)
+    angles_path = tmp_path / 'angles.csv'
+    sync_path = tmp_path / 'sam_sync.csv'
+    vicon_path = tmp_path / 'vicon.csv'
+    sync_json = tmp_path / 'sync.json'
+    pd.DataFrame({
+        'time_ms': time_ms,
+        'r_knee_flex_geo': np.array([0., 10., 20., 30.]),
+    }).to_csv(angles_path, index=False)
+    pd.DataFrame({'ts': time_ms}).to_csv(sync_path, index=False)
+    pd.DataFrame({
+        'time_ms': time_ms + 25,
+        'vicon_knee_flex': np.array([0., 10., 20., 30.]),
+    }).to_csv(vicon_path, index=False)
+    sync_json.write_text(json.dumps({
+        'method': 'test', 'shift_ms': 25, 'status': 'review',
+    }))
+
+    metrics = compare_angles(
+        angles_path, tmp_path / 'valid',
+        sync_json=sync_json, sam_sync_csv=sync_path,
+        vicon_csv=vicon_path, original_time_confirmed=True, plot=False,
+    )
+    assert len(metrics) == 1
+    aligned = pd.read_csv(tmp_path / 'valid' / 'aligned_angles.csv')
+    assert np.allclose(aligned['time_ms_aligned'], time_ms + 25)
+
+    wrong_times = pd.read_csv(angles_path)
+    wrong_times['time_ms'] += 1
+    wrong_times.to_csv(angles_path, index=False)
+    with pytest.raises(ValueError, match='does not match SAM synchronization timestamps'):
+        compare_angles(
+            angles_path, tmp_path / 'invalid',
+            sync_json=sync_json, sam_sync_csv=sync_path,
+            vicon_csv=vicon_path, original_time_confirmed=True, plot=False,
+        )
+
+    legacy_path = tmp_path / 'legacy_angles.csv'
+    pd.DataFrame({
+        'time_ms_aligned': time_ms - 40,
+        'r_knee_flex_geo': np.array([0., 10., 20., 30.]),
+    }).to_csv(legacy_path, index=False)
+    compare_angles(
+        legacy_path, tmp_path / 'legacy',
+        sync_json=sync_json, sam_sync_csv=sync_path,
+        vicon_csv=vicon_path, original_time_confirmed=True, plot=False,
+    )
+    recovered = pd.read_csv(tmp_path / 'legacy' / 'aligned_angles.csv')
+    assert np.allclose(recovered['time_ms'], time_ms)
+    assert np.allclose(recovered['time_ms_aligned'], time_ms + 25)
+
 if __name__=='__main__':run()

@@ -126,7 +126,8 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
     """Compare SAM angles to Vicon; optionally report *exploratory* calibration/shift metrics.
 
     Raw SAM CSV: video `time_ms` plus reviewed sync_json and independent Vicon.
-    Legacy recovery: verified per-row `sam_sync_csv` timestamps, explicitly acknowledged.
+    Timestamp verification: compare existing raw `time_ms` to per-row `sam_sync_csv` timestamps,
+    or recover raw time from legacy `time_ms_aligned` after verifying its constant offset.
     Legacy CSV: pre-existing `time_ms_aligned` and embedded Vicon, requires opt-in.
     The diagnostic shift never changes the original timestamps or primary RMSE.
     """
@@ -158,24 +159,32 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
                 f"SAM sync/angles row count differs: {len(video_t)} vs {len(df)}; "
                 "do not match rows by index"
             )
-        if not already:
-            raise ValueError("Legacy time recovery expects time_ms_aligned for shift verification")
-        legacy_t = _time_clean(df, "time_ms_aligned")
-        differences = legacy_t - video_t
-        legacy_shift = float(np.median(differences))
-        max_deviation = float(np.max(np.abs(differences - legacy_shift)))
-        if max_deviation > 1e-3:
+        if already:
+            legacy_t = _time_clean(df, "time_ms_aligned")
+            differences = legacy_t - video_t
+            legacy_shift = float(np.median(differences))
+            max_deviation = float(np.max(np.abs(differences - legacy_shift)))
+            if max_deviation > 1e-3:
+                raise ValueError(
+                    f"Non-constant legacy shift (maximum deviation {max_deviation:.6f} ms); "
+                    "cannot establish matching row timestamps"
+                )
+            if "time_ms" in df and not np.allclose(
+                _time_clean(df, "time_ms"), video_t, rtol=0, atol=1e-3
+            ):
+                raise ValueError("Existing time_ms does not match SAM synchronization timestamps")
+            df["time_ms"] = video_t
+            print(f"Recovered video timestamps from {sam_sync_csv}; verified old shift "
+                  f"{legacy_shift:+.3f} ms, max deviation {max_deviation:.6g} ms")
+        elif "time_ms" in df:
+            angle_t = _time_clean(df, "time_ms")
+            if not np.allclose(angle_t, video_t, rtol=0, atol=1e-3):
+                raise ValueError("Existing time_ms does not match SAM synchronization timestamps")
+            print(f"Verified original video timestamps against {sam_sync_csv}")
+        else:
             raise ValueError(
-                f"Non-constant legacy shift (maximum deviation {max_deviation:.6f} ms); "
-                "cannot establish matching row timestamps"
+                "Timestamp verification requires time_ms or legacy time_ms_aligned"
             )
-        if "time_ms" in df and not np.allclose(
-            _time_clean(df, "time_ms"), video_t, rtol=0, atol=1e-3
-        ):
-            raise ValueError("Existing time_ms does not match SAM synchronization timestamps")
-        df["time_ms"] = video_t
-        print(f"Recovered video timestamps from {sam_sync_csv}; verified old shift "
-              f"{legacy_shift:+.3f} ms, max deviation {max_deviation:.6g} ms")
     if sync_json is not None:
         if "time_ms" not in df:
             raise ValueError("Independent synchronization requires original time_ms or --sam-sync-csv")
@@ -291,7 +300,7 @@ def main():
     p.add_argument("--angles", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--sync-json")
-    p.add_argument("--sam-sync-csv", help="Original video ts from corresponding SAM synchronization CSV; verifies constant legacy offset")
+    p.add_argument("--sam-sync-csv", help="Original video ts from corresponding SAM synchronization CSV; verifies raw times or a constant legacy offset")
     p.add_argument("--vicon-csv")
     p.add_argument("--vicon-c3d", help="Use src.vicon_parser directly; no Vicon angle CSV required")
     p.add_argument("--original-time-confirmed", action="store_true",
