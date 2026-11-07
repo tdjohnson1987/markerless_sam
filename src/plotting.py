@@ -21,33 +21,48 @@ def _time(df):
     return pd.to_numeric(df[key], errors="coerce") / 1000
 
 
+
 def _ref(df, side, joint, vicon_reference="original"):
     prefix = LEG_PREFIX[side]
 
-    if vicon_reference not in ("original", "harrington"):
-        raise ValueError(
-            "vicon_reference must be 'original' or 'harrington'"
-        )
+    if vicon_reference not in (
+        "original", "harrington", "matched_geometry"
+    ):
+        raise ValueError(f"Invalid Vicon reference: {vicon_reference}")
+
+    if vicon_reference == "matched_geometry":
+        columns = {
+            "hip": f"{prefix}_vicon_hip_unsigned_matched",
+            "knee": f"{prefix}_vicon_knee_flex_matched",
+            "ankle": None,  # Not yet comparable with old SAM geo
+        }
+
+        col = columns[joint]
+
+        if col is not None and col not in df:
+            raise KeyError(f"Missing matched Vicon column: {col}")
+
+        return col
 
     if joint == "hip" and vicon_reference == "harrington":
         col = f"{prefix}_vicon_hip_flex_harrington"
 
         if col not in df:
-            raise KeyError(
-                f"Missing {col}. Regenerate the aligned data "
-                "using the updated Vicon parser and comparison engine."
-            )
+            raise KeyError(f"Missing Harrington Vicon column: {col}")
 
         return col
 
     explicit = f"{prefix}_vicon_{joint}_flex"
+    legacy = f"vicon_{joint}_flex"
 
     if explicit in df:
         return explicit
 
-    legacy = f"vicon_{joint}_flex"
+    if side == "right" and legacy in df:
+        return legacy
 
-    return legacy if side == "right" and legacy in df else None
+    return None
+
 
 
 def plot_joint_overlays(df, title="SAM vs Vicon", method="geo", sides=("left", "right"), 
@@ -62,6 +77,8 @@ def plot_joint_overlays(df, title="SAM vs Vicon", method="geo", sides=("left", "
             color = LEG_COLORS[side]
             scol = f"{LEG_PREFIX[side]}_{joint}_flex_{method}"
             vcol = _ref(df, side, joint, vicon_reference)
+            if vicon_reference == "matched_geometry" and joint == "ankle":
+                continue
             if scol in df:
                 ax.plot(t, pd.to_numeric(df[scol], errors="coerce"), color=color,
                         linestyle="-", label=f"{side.title()} SAM ({method})")
@@ -86,6 +103,8 @@ def plot_joint_errors(df, title="SAM − Vicon error", method="geo", sides=("lef
     for joint, ax in zip(JOINTS, axes):
         for side in sides:
             scol = f"{LEG_PREFIX[side]}_{joint}_flex_{method}"
+            if vicon_reference == "matched_geometry" and joint == "ankle":
+                continue
             vcol = _ref(df, side, joint, vicon_reference)
             if scol in df and vcol:
                 error = (pd.to_numeric(df[scol], errors="coerce") -

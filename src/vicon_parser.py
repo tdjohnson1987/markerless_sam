@@ -15,6 +15,7 @@ import c3d
 import numpy as np
 import pandas as pd
 from typing import Dict, Tuple
+from src.joint_angle_geometry import calculate_matched_angles
 
 
 def unit(v):
@@ -298,6 +299,14 @@ def load_vicon_c3d(
         get_marker("RKNE") + get_marker("RKNEMED")
     ) / 2
 
+    LAJC = (
+    get_marker("LANK") + get_marker("LANKMED")
+) / 2
+
+    RAJC = (
+        get_marker("RANK") + get_marker("RANKMED")
+    ) / 2
+
     # New pelvis-relative hip flexion
     l_hip_new = hip_flexion_proxy(
         LHJC, LKJC, pelvis_forward, pelvis_up
@@ -306,13 +315,38 @@ def load_vicon_c3d(
         RHJC, RKJC, pelvis_forward, pelvis_up
     )
 
+
     # ------------------------------------------------------
-    # 4. Output
+    # 4. Matched geometric angles
+    # ------------------------------------------------------
+
+    matched_angles = {}
+
+    for side, hip, knee, ankle in (
+        ("l", LHJC, LKJC, LAJC),
+        ("r", RHJC, RKJC, RAJC),
+    ):
+        matched_angles[side] = calculate_matched_angles(
+            left_hip=LHJC,
+            right_hip=RHJC,
+            left_shoulder=l_sh,
+            right_shoulder=r_sh,
+            hip=hip,
+            knee=knee,
+            ankle=ankle,
+            heel=get_marker(f"{side.upper()}HEEL"),
+            toe=get_marker(f"{side.upper()}TOE"),
+        )
+
+
+    # ------------------------------------------------------
+    # 5. Output
     # ------------------------------------------------------
 
     time_ms = np.arange(num_frames) / frame_rate * 1000
 
     df = pd.DataFrame({
+    
         "time_ms": time_ms,
 
         # Original marker-derived proxies
@@ -328,11 +362,18 @@ def load_vicon_c3d(
         "l_vicon_hip_flex_harrington": l_hip_new,
     })
 
+    # Store matched geometric angles separately
+    for side in ("l", "r"):
+        for metric, values in matched_angles[side].items():
+            df[f"{side}_vicon_{metric}_matched"] = values
+
     # Optional geometric outputs for subsequent kinetics
     markers["RHJC_est"] = RHJC
     markers["LHJC_est"] = LHJC
     markers["RKJC_est"] = RKJC
     markers["LKJC_est"] = LKJC
+    markers["RAJC_est"] = RAJC
+    markers["LAJC_est"] = LAJC
 
     print("Harrington HJC estimate:")
     for key, value in dimensions.items():

@@ -33,16 +33,34 @@ def _time_clean(df, column):
     return t
 
 
+
 def _reference_column(df, joint, side, vicon_reference="original"):
-    if vicon_reference not in ("original", "harrington"):
-        raise ValueError(
-            "vicon_reference must be 'original' or 'harrington'"
-        )
+    if vicon_reference not in (
+        "original", "harrington", "matched_geometry"
+    ):
+        raise ValueError("Invalid Vicon reference")
+
+    if vicon_reference == "matched_geometry":
+        matched = {
+            "hip": f"{side}_vicon_hip_unsigned_matched",
+            "knee": f"{side}_vicon_knee_flex_matched",
+            # Existing SAM ankle geo is not yet equivalent.
+            "ankle": None,
+        }
+
+        col = matched[joint]
+
+        if col is not None and col not in df:
+            raise KeyError(f"Missing matched reference: {col}")
+
+        return col
 
     if joint == "hip" and vicon_reference == "harrington":
         col = f"{side}_vicon_hip_flex_harrington"
+
         if col not in df:
             raise KeyError(f"Missing Harrington reference: {col}")
+
         return col
 
     explicit = f"{side}_vicon_{joint}_flex"
@@ -50,8 +68,10 @@ def _reference_column(df, joint, side, vicon_reference="original"):
 
     if explicit in df:
         return explicit
+
     if side == "r" and legacy in df:
         return legacy
+
     return None
 
 
@@ -143,7 +163,7 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
     Legacy CSV: pre-existing `time_ms_aligned` and embedded Vicon, requires opt-in.
     The diagnostic shift never changes the original timestamps or primary RMSE.
     """
-    if vicon_reference not in ("original", "harrington"):
+    if vicon_reference not in ("original", "harrington", "matched_geometry"):
         raise ValueError("Invalid Vicon reference")
     if vicon_csv is not None and vicon_c3d is not None:
         raise ValueError("Supply either vicon_csv or vicon_c3d, not both")
@@ -270,11 +290,24 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
                 vicon, t, harrington_col
             )
 
-        if vicon_reference == "harrington" and harrington_col not in df:
-            raise KeyError(
-                f"Missing {harrington_col} in Vicon source. "
-                "Check that vicon_parser.py exports Harrington angles."
-            )
+        # Matched geometric references - only required for the matched_geometry validation.
+        if vicon_reference == "matched_geometry":
+            matched_sources = {
+                "hip": f"{prefix}_vicon_hip_unsigned_matched",
+                "knee": f"{prefix}_vicon_knee_flex_matched",
+            }
+
+            for joint, source_col in matched_sources.items():
+                if source_col not in vicon:
+                    raise KeyError(
+                        f"Missing {source_col} in Vicon source. "
+                        "Regenerate Vicon angles using the "
+                        "updated vicon_parser.py."
+                    )
+
+                df[source_col] = _interpolate_reference(
+                    vicon, t, source_col
+                )
 
     else:
         if not allow_legacy_embedded_reference or not already:
@@ -284,13 +317,21 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
             )
 
         reference_origin = "embedded_preinterpolated_vicon_unverified"
+    
+    methods_to_compare = (
+    ("geo",)
+    if vicon_reference == "matched_geometry"
+    else METHODS
+    )
+    
     rows = []
     for joint in JOINTS:
         vcol = _reference_column(df, joint, prefix ,vicon_reference)
         if vcol is None:
             continue
         v = pd.to_numeric(df[vcol], errors="coerce").to_numpy(dtype=float)
-        for method in METHODS:
+
+        for method in methods_to_compare:
             col = f"{prefix}_{joint}_flex_{method}"
             if col not in df:
                 continue
@@ -313,15 +354,21 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
                "reference_origin": reference_origin,
                "metrics": json.loads(metrics.to_json(orient="records"))}
     (out / "validation_summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False))
+   
     if plot:
         import matplotlib.pyplot as plt
         fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
         for ax, joint in zip(axes, JOINTS):
-            vcol = _reference_column(df, joint, prefix, vicon_reference)
+
+            reference_label = (
+                "Vicon matched geometry"
+                if vicon_reference == "matched_geometry"
+                else f"Vicon {vicon_reference}"
+            )
             if vcol is not None:
-                ax.plot(t/1000, df[vcol], label="Vicon", lw=2.2,
+                ax.plot(t/1000, df[vcol], label=reference_label, lw=2.2,
                         color={"right": "#24985A", "left": "#D94848"}[side], linestyle="--")
-            for method in METHODS:
+            for method in methods_to_compare:
                 col = f"{prefix}_{joint}_flex_{method}"
                 if col in df:
                     ax.plot(t/1000, df[col], label=f"SAM {method}", alpha=.85,
@@ -355,7 +402,7 @@ def main():
     p.add_argument("--allow-legacy-embedded-reference", action="store_true")
     p.add_argument("--static-window-ms", type=float)
     p.add_argument("--diagnostic-shift-ms", type=float)
-    p.add_argument("--vicon-reference", choices=("original", "harrington"), default="original",
+    p.add_argument("--vicon-reference", choices=("original", "harrington", "matched_geometry"), default="original",
                    help="Which Vicon reference to use for hip flexion; Harrington is only available if the Vicon source contains it")
     args = p.parse_args()
     res = compare_angles(args.angles, args.output, sync_json=args.sync_json,
