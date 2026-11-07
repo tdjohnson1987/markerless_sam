@@ -44,8 +44,8 @@ def _reference_column(df, joint, side, vicon_reference="original"):
         matched = {
             "hip": f"{side}_vicon_hip_unsigned_matched",
             "knee": f"{side}_vicon_knee_flex_matched",
-            # Existing SAM ankle geo is not yet equivalent.
-            "ankle": None,
+            # Existing SAM ankle geo is now equivalent.
+            "ankle": f"{side}_vicon_ankle_df_matched",
         }
 
         col = matched[joint]
@@ -295,6 +295,7 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
             matched_sources = {
                 "hip": f"{prefix}_vicon_hip_unsigned_matched",
                 "knee": f"{prefix}_vicon_knee_flex_matched",
+                "ankle": f"{prefix}_vicon_ankle_df_matched",
             }
 
             for joint, source_col in matched_sources.items():

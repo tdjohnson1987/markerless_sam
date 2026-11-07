@@ -34,7 +34,7 @@ def _ref(df, side, joint, vicon_reference="original"):
         columns = {
             "hip": f"{prefix}_vicon_hip_unsigned_matched",
             "knee": f"{prefix}_vicon_knee_flex_matched",
-            "ankle": None,  # Not yet comparable with old SAM geo
+            "ankle": f"{prefix}_vicon_ankle_df_matched",  # Not yet comparable with old SAM geo
         }
 
         col = columns[joint]
@@ -75,10 +75,15 @@ def plot_joint_overlays(df, title="SAM vs Vicon", method="geo", sides=("left", "
     for joint, ax in zip(JOINTS, axes):
         for side in sides:
             color = LEG_COLORS[side]
-            scol = f"{LEG_PREFIX[side]}_{joint}_flex_{method}"
-            vcol = _ref(df, side, joint, vicon_reference)
+            prefix = LEG_PREFIX[side]
+
             if vicon_reference == "matched_geometry" and joint == "ankle":
-                continue
+                scol = f"{prefix}_ankle_df_matched"
+            else:
+                scol = f"{prefix}_{joint}_flex_{method}"
+
+            vcol = _ref(df, side, joint, vicon_reference)
+      
             if scol in df:
                 ax.plot(t, pd.to_numeric(df[scol], errors="coerce"), color=color,
                         linestyle="-", label=f"{side.title()} SAM ({method})")
@@ -102,9 +107,13 @@ def plot_joint_errors(df, title="SAM − Vicon error", method="geo", sides=("lef
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True, layout="constrained")
     for joint, ax in zip(JOINTS, axes):
         for side in sides:
-            scol = f"{LEG_PREFIX[side]}_{joint}_flex_{method}"
+            prefix = LEG_PREFIX[side]
+
             if vicon_reference == "matched_geometry" and joint == "ankle":
-                continue
+                scol = f"{prefix}_ankle_df_matched"
+            else:
+                scol = f"{prefix}_{joint}_flex_{method}"
+
             vcol = _ref(df, side, joint, vicon_reference)
             if scol in df and vcol:
                 error = (pd.to_numeric(df[scol], errors="coerce") -
