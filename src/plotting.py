@@ -21,16 +21,37 @@ def _time(df):
     return pd.to_numeric(df[key], errors="coerce") / 1000
 
 
-def _ref(df, side, joint):
+def _ref(df, side, joint, vicon_reference="original"):
     prefix = LEG_PREFIX[side]
+
+    if vicon_reference not in ("original", "harrington"):
+        raise ValueError(
+            "vicon_reference must be 'original' or 'harrington'"
+        )
+
+    if joint == "hip" and vicon_reference == "harrington":
+        col = f"{prefix}_vicon_hip_flex_harrington"
+
+        if col not in df:
+            raise KeyError(
+                f"Missing {col}. Regenerate the aligned data "
+                "using the updated Vicon parser and comparison engine."
+            )
+
+        return col
+
     explicit = f"{prefix}_vicon_{joint}_flex"
+
     if explicit in df:
         return explicit
+
     legacy = f"vicon_{joint}_flex"
+
     return legacy if side == "right" and legacy in df else None
 
 
-def plot_joint_overlays(df, title="SAM vs Vicon", method="geo", sides=("left", "right")):
+def plot_joint_overlays(df, title="SAM vs Vicon", method="geo", sides=("left", "right"), 
+                        vicon_reference="original"):
     """Solid SAM and dashed Vicon; red left and green right."""
     if method not in METHODS:
         raise ValueError(f"Method must be one of {METHODS}")
@@ -40,7 +61,7 @@ def plot_joint_overlays(df, title="SAM vs Vicon", method="geo", sides=("left", "
         for side in sides:
             color = LEG_COLORS[side]
             scol = f"{LEG_PREFIX[side]}_{joint}_flex_{method}"
-            vcol = _ref(df, side, joint)
+            vcol = _ref(df, side, joint, vicon_reference)
             if scol in df:
                 ax.plot(t, pd.to_numeric(df[scol], errors="coerce"), color=color,
                         linestyle="-", label=f"{side.title()} SAM ({method})")
@@ -59,13 +80,13 @@ def plot_joint_overlays(df, title="SAM vs Vicon", method="geo", sides=("left", "
     return fig
 
 
-def plot_joint_errors(df, title="SAM − Vicon error", method="geo", sides=("left", "right")):
+def plot_joint_errors(df, title="SAM − Vicon error", method="geo", sides=("left", "right"), vicon_reference="original"):
     t = _time(df)
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True, layout="constrained")
     for joint, ax in zip(JOINTS, axes):
         for side in sides:
             scol = f"{LEG_PREFIX[side]}_{joint}_flex_{method}"
-            vcol = _ref(df, side, joint)
+            vcol = _ref(df, side, joint, vicon_reference)
             if scol in df and vcol:
                 error = (pd.to_numeric(df[scol], errors="coerce") -
                          pd.to_numeric(df[vcol], errors="coerce"))
@@ -80,7 +101,7 @@ def plot_joint_errors(df, title="SAM − Vicon error", method="geo", sides=("lef
     return fig
 
 
-def plot_camera_comparison(camera_frames, joint="knee", method="geo", sides=("left", "right")):
+def plot_camera_comparison(camera_frames, joint="knee", method="geo", sides=("left", "right"), vicon_reference="original"):
     """Compare cameras, each dataframe separately aligned to Vicon time."""
     fig, ax = plt.subplots(figsize=(12, 5), layout="constrained")
     for cam_idx, (camera, df) in enumerate(camera_frames.items()):
@@ -93,7 +114,7 @@ def plot_camera_comparison(camera_frames, joint="knee", method="geo", sides=("le
     if camera_frames:
         first = next(iter(camera_frames.values()))
         for side in sides:
-            ref = _ref(first, side, joint)
+            ref = _ref(first, side, joint, vicon_reference)
             if ref:
                 ax.plot(_time(first), pd.to_numeric(first[ref], errors="coerce"),
                         color=LEG_COLORS[side], linestyle="--", label=f"{side.title()} Vicon")

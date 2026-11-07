@@ -33,9 +33,21 @@ def _time_clean(df, column):
     return t
 
 
-def _reference_column(df, joint, side):
+def _reference_column(df, joint, side, vicon_reference="original"):
+    if vicon_reference not in ("original", "harrington"):
+        raise ValueError(
+            "vicon_reference must be 'original' or 'harrington'"
+        )
+
+    if joint == "hip" and vicon_reference == "harrington":
+        col = f"{side}_vicon_hip_flex_harrington"
+        if col not in df:
+            raise KeyError(f"Missing Harrington reference: {col}")
+        return col
+
     explicit = f"{side}_vicon_{joint}_flex"
     legacy = f"vicon_{joint}_flex"
+
     if explicit in df:
         return explicit
     if side == "r" and legacy in df:
@@ -122,7 +134,7 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
                    subject="unknown", trial="unknown", camera="unknown",
                    side="right", allow_legacy_embedded_reference=False,
                    static_window_ms=None, diagnostic_shift_ms=None, plot=True,
-                   original_time_confirmed=False):
+                   original_time_confirmed=False, vicon_reference="original"):
     """Compare SAM angles to Vicon; optionally report *exploratory* calibration/shift metrics.
 
     Raw SAM CSV: video `time_ms` plus reviewed sync_json and independent Vicon.
@@ -131,6 +143,8 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
     Legacy CSV: pre-existing `time_ms_aligned` and embedded Vicon, requires opt-in.
     The diagnostic shift never changes the original timestamps or primary RMSE.
     """
+    if vicon_reference not in ("original", "harrington"):
+        raise ValueError("Invalid Vicon reference")
     if vicon_csv is not None and vicon_c3d is not None:
         raise ValueError("Supply either vicon_csv or vicon_c3d, not both")
     if side not in SIDES:
@@ -224,6 +238,7 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
                 src = f"{prefix0}_{joint}_flex" if joint != "ankle" else f"{prefix0}_ankle_df"
                 if dst not in vicon and src in vicon:
                     vicon[dst] = vicon[src]
+
         reference_origin = "independent_vicon_c3d"
     elif vicon_csv is not None:
         vicon = pd.read_csv(vicon_csv)
@@ -235,16 +250,43 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
         for joint in JOINTS:
             explicit = f"{prefix}_vicon_{joint}_flex"
             legacy = f"vicon_{joint}_flex"
-            source_col = explicit if explicit in vicon else legacy if side == "right" and legacy in vicon else None
+
+            source_col = (
+                explicit if explicit in vicon
+                else legacy if side == "right" and legacy in vicon
+                else None
+            )
+
             if source_col is not None:
-                df[explicit] = _interpolate_reference(vicon, t, source_col)
+                df[explicit] = _interpolate_reference(
+                    vicon, t, source_col
+                )
+
+        # Interpolate Harrington hip angles for the selected side
+        harrington_col = f"{prefix}_vicon_hip_flex_harrington"
+
+        if harrington_col in vicon:
+            df[harrington_col] = _interpolate_reference(
+                vicon, t, harrington_col
+            )
+
+        if vicon_reference == "harrington" and harrington_col not in df:
+            raise KeyError(
+                f"Missing {harrington_col} in Vicon source. "
+                "Check that vicon_parser.py exports Harrington angles."
+            )
+
     else:
         if not allow_legacy_embedded_reference or not already:
-            raise ValueError("Provide --vicon-csv or opt into pre-aligned embedded Vicon legacy mode")
+            raise ValueError(
+                "Provide --vicon-csv or opt into pre-aligned "
+                "embedded Vicon legacy mode"
+            )
+
         reference_origin = "embedded_preinterpolated_vicon_unverified"
     rows = []
     for joint in JOINTS:
-        vcol = _reference_column(df, joint, prefix)
+        vcol = _reference_column(df, joint, prefix ,vicon_reference)
         if vcol is None:
             continue
         v = pd.to_numeric(df[vcol], errors="coerce").to_numpy(dtype=float)
@@ -257,7 +299,7 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
                         diagnostic_shift_ms=diagnostic_shift_ms)
             if m is not None:
                 rows.append(dict(subject=subject, trial=trial, camera=camera,
-                                 side=side, joint=joint, method=method,
+                                 side=side, joint=joint, method=method, vicon_reference=vicon_reference,
                                  reference_origin=reference_origin,
                                  sync_method=sync.get("method"),
                                  sync_shift_ms=sync.get("shift_ms"), **m))
@@ -267,14 +309,15 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
     df.to_csv(out / "aligned_angles.csv", index=False)
     metrics.to_csv(out / "validation_metrics.csv", index=False)
     summary = {"subject": subject, "trial": trial, "camera": camera,
-               "side": side, "sync": sync, "reference_origin": reference_origin,
+               "side": side, "sync": sync, "vicon_reference": vicon_reference, 
+               "reference_origin": reference_origin,
                "metrics": json.loads(metrics.to_json(orient="records"))}
     (out / "validation_summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False))
     if plot:
         import matplotlib.pyplot as plt
         fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
         for ax, joint in zip(axes, JOINTS):
-            vcol = _reference_column(df, joint, prefix)
+            vcol = _reference_column(df, joint, prefix, vicon_reference)
             if vcol is not None:
                 ax.plot(t/1000, df[vcol], label="Vicon", lw=2.2,
                         color={"right": "#24985A", "left": "#D94848"}[side], linestyle="--")
@@ -312,6 +355,8 @@ def main():
     p.add_argument("--allow-legacy-embedded-reference", action="store_true")
     p.add_argument("--static-window-ms", type=float)
     p.add_argument("--diagnostic-shift-ms", type=float)
+    p.add_argument("--vicon-reference", choices=("original", "harrington"), default="original",
+                   help="Which Vicon reference to use for hip flexion; Harrington is only available if the Vicon source contains it")
     args = p.parse_args()
     res = compare_angles(args.angles, args.output, sync_json=args.sync_json,
                          sam_sync_csv=args.sam_sync_csv,
@@ -320,7 +365,8 @@ def main():
                          trial=args.trial, camera=args.camera, side=args.side,
                          allow_legacy_embedded_reference=args.allow_legacy_embedded_reference,
                          static_window_ms=args.static_window_ms,
-                         diagnostic_shift_ms=args.diagnostic_shift_ms)
+                         diagnostic_shift_ms=args.diagnostic_shift_ms,
+                         vicon_reference=args.vicon_reference)
     print(res[["side", "joint", "method", "rmse_raw_deg", "rmse_neutral_deg",
                "rmse_neutral_shifted_deg"]].to_string(index=False))
     print(f"Outputs saved to {args.output}")

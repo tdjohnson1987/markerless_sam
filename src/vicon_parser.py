@@ -1,7 +1,14 @@
+
 """
-Vicon C3D Parser & Biomechanical Kinematics Engine (SAM 3D MHR Standard)
-Extracts 3D optical marker trajectories from Vicon C3D files and calculates 
-clinical joint angles (Knee Flexion, Hip Flexion) using pelvic anatomical frame projection.
+Vicon C3D Parser & Biomechanical Kinematics Engine.
+
+Exports:
+- Legacy marker-derived geometric joint-angle proxies
+- Harrington (2007) pelvis-based hip joint centre estimates
+- Pelvis-relative sagittal hip flexion proxies
+
+The new angles are anatomical approximations, not exact
+Plug-in Gait Cardan outputs.
 """
 
 import c3d
@@ -10,191 +17,333 @@ import pandas as pd
 from typing import Dict, Tuple
 
 
-def load_vicon_c3d(c3d_path: str) -> Tuple[pd.DataFrame, float, Dict[str, np.ndarray]]:
+def unit(v):
+    """Normalize vectors along the last dimension."""
+    v = np.asarray(v, dtype=float)
+    norm = np.linalg.norm(v, axis=-1, keepdims=True)
+
+    return np.divide(
+        v,
+        norm,
+        out=np.full_like(v, np.nan),
+        where=norm > 1e-8
+    )
+
+
+def build_pelvis_frame(LASI, RASI, LPSI, RPSI):
+    """Construct pelvic axes from bilateral ASIS and PSIS markers."""
+    asis_mid = (LASI + RASI) / 2
+    psis_mid = (LPSI + RPSI) / 2
+
+    pelvis_left = unit(LASI - RASI)
+
+    anterior = asis_mid - psis_mid
+    anterior = anterior - (
+        np.sum(anterior * pelvis_left, axis=1, keepdims=True)
+        * pelvis_left
+    )
+
+    pelvis_forward = unit(anterior)
+    pelvis_up = unit(np.cross(pelvis_forward, pelvis_left))
+
+    return asis_mid, pelvis_forward, pelvis_left, pelvis_up
+
+
+def harrington_hjc(
+    LASI, RASI, LPSI, RPSI,
+    pelvis_forward, pelvis_left, pelvis_up
+):
     """
-    Parses a Vicon C3D file and returns:
-    1. A pandas DataFrame of calculated joint angles over time.
-    2. The sampling frame rate (Hz).
-    3. Dictionary of raw 3D marker coordinate arrays shape (N_frames, 3).
+    Harrington et al. (2007) pelvis-only HJC regression.
+
+    Input/output coordinates in millimetres.
+    Local axes: anterior +, left +, superior +.
     """
-    with open(c3d_path, 'rb') as f:
+    asis_mid = (LASI + RASI) / 2
+    psis_mid = (LPSI + RPSI) / 2
+
+    pw = np.nanmedian(np.linalg.norm(LASI - RASI, axis=1))
+    pd = np.nanmedian(np.linalg.norm(asis_mid - psis_mid, axis=1))
+
+    if not np.isfinite(pw) or not np.isfinite(pd) or pw <= 0 or pd <= 0:
+        raise ValueError("Invalid pelvic dimensions for HJC regression")
+
+    ap = -0.24 * pd - 9.9
+    si = -0.30 * pw - 10.9
+    ml = 0.33 * pw + 7.3
+
+    common = (
+        asis_mid
+        + ap * pelvis_forward
+        + si * pelvis_up
+    )
+
+    LHJC = common + ml * pelvis_left
+    RHJC = common - ml * pelvis_left
+
+    dimensions = {
+        "pelvis_width_mm": float(pw),
+        "pelvis_depth_mm": float(pd),
+        "hjc_ap_mm": float(ap),
+        "hjc_si_mm": float(si),
+        "hjc_ml_mm": float(ml),
+    }
+
+    return LHJC, RHJC, dimensions
+
+
+def hip_flexion_proxy(hjc, knee_center, pelvis_forward, pelvis_up):
+    """
+    Signed pelvis-relative sagittal thigh orientation.
+
+    Positive when knee is anterior relative to pelvis.
+    Not a full 3D joint coordinate system angle.
+    """
+    thigh_down = unit(knee_center - hjc)
+
+    forward = np.sum(
+        thigh_down * pelvis_forward, axis=1
+    )
+    downward = -np.sum(
+        thigh_down * pelvis_up, axis=1
+    )
+
+    return np.degrees(np.arctan2(forward, downward))
+
+
+def load_vicon_c3d(
+    c3d_path: str
+) -> Tuple[pd.DataFrame, float, Dict[str, np.ndarray]]:
+
+    with open(c3d_path, "rb") as f:
         reader = c3d.Reader(f)
+
         frame_rate = float(reader.point_rate)
-        point_labels = [lbl.strip() for lbl in reader.point_labels]
-        label_to_idx = {label: i for i, label in enumerate(point_labels) if label}
-        
+        labels = [lbl.strip() for lbl in reader.point_labels]
+        label_to_idx = {
+            label: i for i, label in enumerate(labels) if label
+        }
+
         raw_frames = []
-        for frame_no, points, analog in reader.read_frames():
-            # points shape: (N_points, 5) -> (x, y, z, err, cam_cnt)
-            raw_frames.append(points[:, :3])
-            
-    raw_frames = np.array(raw_frames)  # (N_frames, N_points, 3)
+
+        for _, points, _ in reader.read_frames():
+            xyz = np.asarray(points[:, :3], dtype=float).copy()
+
+            # Negative residual indicates an invalid C3D point.
+            # Keep it missing rather than interpreting it as anatomy.
+            invalid = ~np.isfinite(xyz).all(axis=1)
+            if points.shape[1] > 3:
+                invalid |= points[:, 3] < 0
+
+            xyz[invalid] = np.nan
+            raw_frames.append(xyz)
+
+    raw_frames = np.asarray(raw_frames)
     num_frames = len(raw_frames)
-    
-    markers: Dict[str, np.ndarray] = {}
-    for label, idx in label_to_idx.items():
-        markers[label] = raw_frames[:, idx, :]
 
-    def get_marker(name: str, fallback_names: list = None) -> np.ndarray:
-        if name in markers:
-            return markers[name]
-        if fallback_names:
-            for fname in fallback_names:
-                if fname in markers:
-                    return markers[fname]
-        raise KeyError(f"Marker {name} not found in C3D file.")
+    markers = {
+        label: raw_frames[:, idx, :]
+        for label, idx in label_to_idx.items()
+    }
 
-    # 1. Primary Vicon Anatomical Markers
-    l_sh = get_marker('LCLAVLAT', ['LCLAVMID', 'C7', 'STRN'])
-    r_sh = get_marker('RCLAVLAT', ['RCLAVMID', 'C7', 'STRN'])
-    r_hip = get_marker('RASI')
-    r_knee = get_marker('RKNE')
-    r_ankle = get_marker('RANK')
+    def get_marker(name, fallback_names=None):
+        for label in [name] + (fallback_names or []):
+            if label in markers:
+                return markers[label]
+        raise KeyError(f"Marker not found: {name}")
 
-    l_hip = get_marker('LASI')
-    l_knee = get_marker('LKNE') # 
-    l_ankle = get_marker('LANK')
+    # ------------------------------------------------------
+    # 1. Original reference geometry (preserved)
+    # ------------------------------------------------------
 
-    r_heel = get_marker("RHEEL")
-    r_toe = get_marker("RTOE")
+    l_sh = get_marker(
+        "LCLAVLAT", ["LCLAVMID", "C7", "STRN"]
+    )
+    r_sh = get_marker(
+        "RCLAVLAT", ["RCLAVMID", "C7", "STRN"]
+    )
+
+    LASI = get_marker("LASI")
+    RASI = get_marker("RASI")
+    LPSI = get_marker("LPSI")
+    RPSI = get_marker("RPSI")
+
+    l_knee = get_marker("LKNE")
+    r_knee = get_marker("RKNE")
+    l_ankle = get_marker("LANK")
+    r_ankle = get_marker("RANK")
 
     l_heel = get_marker("LHEEL")
+    r_heel = get_marker("RHEEL")
     l_toe = get_marker("LTOE")
+    r_toe = get_marker("RTOE")
 
-    # Convert shape to (3, N_frames) for vector cross products
-    l_sh_t = l_sh.T
-    r_sh_t = r_sh.T
-    l_hip_t = l_hip.T
-    r_hip_t = r_hip.T
-    r_knee_t = r_knee.T
-    r_ankle_t = r_ankle.T
-    l_knee_t = l_knee.T
-    l_ankle_t = l_ankle.T
-    l_heel_t = l_heel.T
-    l_toe_t = l_toe.T
-    r_heel_t = r_heel.T
-    r_toe_t = r_toe.T
+    # Legacy shoulder-based sagittal frame
+    mid_hip = (LASI + RASI) / 2
+    mid_sh = (l_sh + r_sh) / 2
 
-    # 2. Build Anatomical Pelvic Frame (Forward, Up, Left)
-    mid_hip = (l_hip_t + r_hip_t) / 2.0
-    mid_sh = (l_sh_t + r_sh_t) / 2.0
+    left_legacy = unit(LASI - RASI)
+    up_provisional = unit(mid_sh - mid_hip)
+    fwd_legacy = unit(np.cross(left_legacy, up_provisional))
+    up_legacy = unit(np.cross(fwd_legacy, left_legacy))
 
-    left = l_hip_t - r_hip_t
-    left_norm = np.linalg.norm(left, axis=0, keepdims=True)
-    left_norm = np.where(left_norm == 0, 1e-6, left_norm)
-    left /= left_norm
+    def project_legacy(v):
+        return np.column_stack((
+            np.sum(v * fwd_legacy, axis=1),
+            np.sum(v * up_legacy, axis=1)
+        ))
 
-    up_temp = mid_sh - mid_hip
-    up_temp_norm = np.linalg.norm(up_temp, axis=0, keepdims=True)
-    up_temp_norm = np.where(up_temp_norm == 0, 1e-6, up_temp_norm)
-    up_temp /= up_temp_norm
-
-    fwd = np.cross(left, up_temp, axis=0)
-    fwd_norm = np.linalg.norm(fwd, axis=0, keepdims=True)
-    fwd_norm = np.where(fwd_norm == 0, 1e-6, fwd_norm)
-    fwd /= fwd_norm
-
-    up = np.cross(fwd, left, axis=0)
-    up_norm = np.linalg.norm(up, axis=0, keepdims=True)
-    up_norm = np.where(up_norm == 0, 1e-6, up_norm)
-    up /= up_norm
-
-    # 3. Calculate Clinical Projected Joint Angles
     def calc_vicon_angle(p1, p2, p3, joint_type):
         v1_raw = p1 - p2
         v2_raw = p3 - p2
-        
-        v1 = np.array([np.sum(v1_raw * fwd, axis=0), np.sum(v1_raw * up, axis=0)])
-        v2 = np.array([np.sum(v2_raw * fwd, axis=0), np.sum(v2_raw * up, axis=0)])
-        
-        norm1 = np.linalg.norm(v1, axis=0)
-        norm2 = np.linalg.norm(v2, axis=0)
-        norm1 = np.where(norm1 == 0, 1e-6, norm1)
-        norm2 = np.where(norm2 == 0, 1e-6, norm2)
-        
-        cosine_angle = np.sum(v1 * v2, axis=0) / (norm1 * norm2)
-        abs_angle = np.degrees(np.arccos(np.clip(cosine_angle, -1.0, 1.0)))
-        
-        if joint_type == 'knee':
-            return 180.0 - abs_angle
-        elif joint_type == 'hip':
-            is_flexion = np.sum(v2_raw * fwd, axis=0) > 0
-            return np.where(is_flexion, 180.0 - abs_angle, -(180.0 - abs_angle))
 
+        v1 = project_legacy(v1_raw)
+        v2 = project_legacy(v2_raw)
 
-    def calc_ankle_df(knee, ankle, heel, toe, fwd, up):
-        """
-        Sagittal-plane shank-foot angle in degrees.
-
-        Positive = dorsiflexion
-        Negative = plantarflexion
-
-        Assumes:
-        - fwd points anteriorly
-        - up points superiorly
-        - arrays have shape (3, N)
-        """
-
-        shank = knee - ankle
-        foot = toe - heel
-
-        shank_f = np.sum(shank * fwd, axis=0)
-        shank_u = np.sum(shank * up, axis=0)
-
-        foot_f = np.sum(foot * fwd, axis=0)
-        foot_u = np.sum(foot * up, axis=0)
-
-        shank_norm = np.hypot(shank_f, shank_u)
-        foot_norm = np.hypot(foot_f, foot_u)
-
-        valid = (
-            np.isfinite(shank_norm)
-            & np.isfinite(foot_norm)
-            & (shank_norm > 1e-8)
-            & (foot_norm > 1e-8)
+        norms = np.linalg.norm(v1, axis=1) * np.linalg.norm(v2, axis=1)
+        cosine = np.divide(
+            np.sum(v1 * v2, axis=1),
+            norms,
+            out=np.full(len(v1), np.nan),
+            where=norms > 1e-8
         )
 
-        df = np.full(shank_f.shape, np.nan)
+        angle = np.degrees(
+            np.arccos(np.clip(cosine, -1, 1))
+        )
 
-        shank_angle = np.arctan2(shank_u[valid], shank_f[valid])
-        foot_angle = np.arctan2(foot_u[valid], foot_f[valid])
+        flex = 180 - angle
+
+        if joint_type == "knee":
+            return flex
+
+        if joint_type == "hip":
+            is_flexion = np.sum(
+                v2_raw * fwd_legacy, axis=1
+            ) > 0
+
+            return np.where(is_flexion, flex, -flex)
+
+        raise ValueError(f"Unsupported joint: {joint_type}")
+
+    def calc_ankle_df(knee, ankle, heel, toe):
+        shank = project_legacy(knee - ankle)
+        foot = project_legacy(toe - heel)
+
+        shank_angle = np.arctan2(shank[:, 1], shank[:, 0])
+        foot_angle = np.arctan2(foot[:, 1], foot[:, 0])
 
         angle = np.degrees(
             np.pi / 2 - (shank_angle - foot_angle)
         )
 
-        df[valid] = (angle + 180) % 360 - 180
+        result = (angle + 180) % 360 - 180
+        valid = (
+            np.isfinite(shank).all(axis=1)
+            & np.isfinite(foot).all(axis=1)
+            & (np.linalg.norm(shank, axis=1) > 1e-8)
+            & (np.linalg.norm(foot, axis=1) > 1e-8)
+        )
+        result[~valid] = np.nan
+        return result
 
-        return df
+    # Original outputs (names and definitions unchanged)
+    r_hip_old = calc_vicon_angle(
+        r_sh, RASI, r_knee, "hip"
+    )
+    l_hip_old = calc_vicon_angle(
+        l_sh, LASI, l_knee, "hip"
+    )
 
-    vicon_knee_flex_r = calc_vicon_angle(r_hip_t, r_knee_t, r_ankle_t, 'knee')
-    vicon_hip_flex_r = calc_vicon_angle(r_sh_t, r_hip_t, r_knee_t, 'hip')
-    vicon_knee_flex_l = calc_vicon_angle(l_hip_t, l_knee_t, l_ankle_t, 'knee')
-    vicon_hip_flex_l = calc_vicon_angle(l_sh_t, l_hip_t, l_knee_t, 'hip')
-    vicon_ankle_df_r = calc_ankle_df(r_knee_t, r_ankle_t, r_heel_t, r_toe_t, fwd, up)
-    vicon_ankle_df_l = calc_ankle_df(l_knee_t, l_ankle_t, l_heel_t, l_toe_t, fwd, up)
+    r_knee_old = calc_vicon_angle(
+        RASI, r_knee, r_ankle, "knee"
+    )
+    l_knee_old = calc_vicon_angle(
+        LASI, l_knee, l_ankle, "knee"
+    )
 
-    time_points = np.arange(num_frames) / frame_rate
+    r_ankle_old = calc_ankle_df(
+        r_knee, r_ankle, r_heel, r_toe
+    )
+    l_ankle_old = calc_ankle_df(
+        l_knee, l_ankle, l_heel, l_toe
+    )
+
+    # ------------------------------------------------------
+    # 2. Anatomical pelvic frame
+    # ------------------------------------------------------
+
+    (
+        asis_mid,
+        pelvis_forward,
+        pelvis_left,
+        pelvis_up,
+    ) = build_pelvis_frame(LASI, RASI, LPSI, RPSI)
+
+    # ------------------------------------------------------
+    # 3. Harrington HJC estimation
+    # ------------------------------------------------------
+
+    LHJC, RHJC, dimensions = harrington_hjc(
+        LASI, RASI, LPSI, RPSI,
+        pelvis_forward, pelvis_left, pelvis_up
+    )
+
+    # Bilateral medial/lateral knee joint-centre proxies
+    LKJC = (
+        get_marker("LKNE") + get_marker("LKNEMED")
+    ) / 2
+
+    RKJC = (
+        get_marker("RKNE") + get_marker("RKNEMED")
+    ) / 2
+
+    # New pelvis-relative hip flexion
+    l_hip_new = hip_flexion_proxy(
+        LHJC, LKJC, pelvis_forward, pelvis_up
+    )
+    r_hip_new = hip_flexion_proxy(
+        RHJC, RKJC, pelvis_forward, pelvis_up
+    )
+
+    # ------------------------------------------------------
+    # 4. Output
+    # ------------------------------------------------------
+
+    time_ms = np.arange(num_frames) / frame_rate * 1000
 
     df = pd.DataFrame({
-        "time_ms": time_points * 1000.0,
+        "time_ms": time_ms,
 
-        # Right leg
-        "r_vicon_hip_flex": vicon_hip_flex_r,
-        "r_vicon_knee_flex": vicon_knee_flex_r,
-        "r_vicon_ankle_flex": vicon_ankle_df_r,
+        # Original marker-derived proxies
+        "r_vicon_hip_flex": r_hip_old,
+        "l_vicon_hip_flex": l_hip_old,
+        "r_vicon_knee_flex": r_knee_old,
+        "l_vicon_knee_flex": l_knee_old,
+        "r_vicon_ankle_flex": r_ankle_old,
+        "l_vicon_ankle_flex": l_ankle_old,
 
-        # Left leg
-        "l_vicon_hip_flex": vicon_hip_flex_l,
-        "l_vicon_knee_flex": vicon_knee_flex_l,
-        "l_vicon_ankle_flex": vicon_ankle_df_l,
+        # New pelvis-relative HJC-based proxies
+        "r_vicon_hip_flex_harrington": r_hip_new,
+        "l_vicon_hip_flex_harrington": l_hip_new,
     })
+
+    # Optional geometric outputs for subsequent kinetics
+    markers["RHJC_est"] = RHJC
+    markers["LHJC_est"] = LHJC
+    markers["RKJC_est"] = RKJC
+    markers["LKJC_est"] = LKJC
+
+    print("Harrington HJC estimate:")
+    for key, value in dimensions.items():
+        print(f"  {key}: {value:.2f}")
 
     return df, frame_rate, markers
 
 
-if __name__ == '__main__':
-    df, rate, markers = load_vicon_c3d('vicon/lunge/s11_lunge_0_1.c3d')
-    print(f"Loaded Vicon SAM 3D anatomical frame file: {len(df)} frames at {rate} Hz")
-    print(df[['time_ms', 'r_vicon_knee_flex', 'r_vicon_hip_flex']].head())
-
+if __name__ == "__main__":
+    df, rate, markers = load_vicon_c3d(
+        "vicon/lunge/s11_lunge_0_1.c3d"
+    )
+    print(f"Loaded {len(df)} frames at {rate:.1f} Hz")
+    print(df.head())
