@@ -332,19 +332,50 @@ def compare_angles(angle_csv, output_dir, *, sync_json=None, sam_sync_csv=None, 
             continue
         v = pd.to_numeric(df[vcol], errors="coerce").to_numpy(dtype=float)
 
-        for method in methods_to_compare:
+    for method in methods_to_compare:
+
+        if vicon_reference == "matched_geometry":
+            sam_columns = {
+                "hip": f"{prefix}_hip_unsigned_matched",
+                "knee": f"{prefix}_knee_flex_matched",
+                "ankle": f"{prefix}_ankle_df_matched",
+            }
+            col = sam_columns[joint]
+        else:
             col = f"{prefix}_{joint}_flex_{method}"
-            if col not in df:
-                continue
-            s = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
-            m = _metric(v, s, t, static_window_ms=static_window_ms,
-                        diagnostic_shift_ms=diagnostic_shift_ms)
-            if m is not None:
-                rows.append(dict(subject=subject, trial=trial, camera=camera,
-                                 side=side, joint=joint, method=method, vicon_reference=vicon_reference,
-                                 reference_origin=reference_origin,
-                                 sync_method=sync.get("method"),
-                                 sync_shift_ms=sync.get("shift_ms"), **m))
+
+        if col not in df:
+            if vicon_reference == "matched_geometry":
+                raise KeyError(f"Missing matched SAM column: {col}")
+            continue
+
+        s = pd.to_numeric(
+            df[col], errors="coerce"
+        ).to_numpy(dtype=float)
+
+        m = _metric(
+            v, s, t,
+            static_window_ms=static_window_ms,
+            diagnostic_shift_ms=diagnostic_shift_ms,
+        )
+
+        if m is not None:
+            rows.append(dict(
+                subject=subject,
+                trial=trial,
+                camera=camera,
+                side=side,
+                joint=joint,
+                method=method,
+                vicon_reference=vicon_reference,
+                sam_column=col,
+                vicon_column=vcol,
+                reference_origin=reference_origin,
+                sync_method=sync.get("method"),
+                sync_shift_ms=sync.get("shift_ms"),
+                **m
+            ))
+
     if not rows:
         raise ValueError("No comparable joint/method columns with >=3 samples")
     metrics = pd.DataFrame(rows)
