@@ -7,3 +7,6 @@ c3d
 jupyterlab
 ipykernel
 pytest 
+
+# OpenSim is distributed through conda, not PyPI. Install it in the notebook
+# environment with: conda install -c opensim-org -c conda-forge opensim=4.6
